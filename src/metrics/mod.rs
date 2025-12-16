@@ -4,12 +4,34 @@
 //! - Per-node metrics tracking (ops, latency, errors)
 //! - Aggregated metrics across all nodes
 //! - Temporal diff calculation for INFO statistics
+//! - FT.INFO parsing for EC and MemoryDB engines
+//! - Index backfill progress monitoring
+//! - Cluster snapshot comparison
 //! - JSON/CSV export
 
+pub mod backfill;
 pub mod collector;
+pub mod ft_info;
+pub mod info_fields;
 pub mod node_metrics;
 pub mod reporter;
+pub mod snapshot;
 
+pub use backfill::{
+    get_node_progress, get_node_progress_ec, get_node_progress_memorydb,
+    wait_for_index_backfill_complete, BackfillWaitConfig, ClusterBackfillProgress, NodeProgress,
+};
 pub use collector::MetricsCollector;
+pub use ft_info::{
+    convert_ftinfo_to_lines, convert_memdb_ftinfo_to_lines, EngineType, FtInfoResult, IndexStatus,
+};
+pub use info_fields::{
+    default_ftinfo_fields, default_info_fields, default_search_info_fields, AggregationType,
+    DiffType, DisplayFormat, InfoFieldType, NodeFilter, ParseConfig, ParseStrategy,
+};
 pub use node_metrics::NodeMetrics;
 pub use reporter::MetricsReporter;
+pub use snapshot::{
+    compare_snapshots, print_snapshot_diff, ClusterSnapshot, FieldDiff, SnapshotBuilder,
+    SnapshotDiff,
+};
