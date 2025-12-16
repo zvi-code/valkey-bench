@@ -1,0 +1,162 @@
+//! Workload type definitions
+
+/// Supported benchmark workload types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkloadType {
+    // === Standard benchmarks ===
+    Ping,
+    Set,
+    Get,
+    Incr,
+    Lpush,
+    Rpush,
+    Lpop,
+    Rpop,
+    Sadd,
+    Spop,
+    Hset,
+    Zadd,
+    Zpopmin,
+    Lrange100,
+    Lrange300,
+    Lrange500,
+    Lrange600,
+    Mset,
+
+    // === Vector search workloads ===
+    /// Load vectors with HSET
+    VecLoad,
+    /// Query vectors with FT.SEARCH
+    VecQuery,
+    /// Delete vector keys
+    VecDelete,
+    /// Update existing vectors
+    VecUpdate,
+
+    // === Custom command ===
+    Custom,
+}
+
+impl WorkloadType {
+    /// Parse workload type from string (case-insensitive)
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "ping" => Some(Self::Ping),
+            "set" => Some(Self::Set),
+            "get" => Some(Self::Get),
+            "incr" => Some(Self::Incr),
+            "lpush" => Some(Self::Lpush),
+            "rpush" => Some(Self::Rpush),
+            "lpop" => Some(Self::Lpop),
+            "rpop" => Some(Self::Rpop),
+            "sadd" => Some(Self::Sadd),
+            "spop" => Some(Self::Spop),
+            "hset" => Some(Self::Hset),
+            "zadd" => Some(Self::Zadd),
+            "zpopmin" => Some(Self::Zpopmin),
+            "lrange" | "lrange_100" | "lrange100" => Some(Self::Lrange100),
+            "lrange_300" | "lrange300" => Some(Self::Lrange300),
+            "lrange_500" | "lrange500" => Some(Self::Lrange500),
+            "lrange_600" | "lrange600" => Some(Self::Lrange600),
+            "mset" => Some(Self::Mset),
+            "vecload" | "vec-load" | "vec_load" => Some(Self::VecLoad),
+            "vecquery" | "vec-query" | "vec_query" => Some(Self::VecQuery),
+            "vecdelete" | "vec-delete" | "vec_delete" => Some(Self::VecDelete),
+            "vecupdate" | "vec-update" | "vec_update" => Some(Self::VecUpdate),
+            _ => None,
+        }
+    }
+
+    /// Get display name
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ping => "PING",
+            Self::Set => "SET",
+            Self::Get => "GET",
+            Self::Incr => "INCR",
+            Self::Lpush => "LPUSH",
+            Self::Rpush => "RPUSH",
+            Self::Lpop => "LPOP",
+            Self::Rpop => "RPOP",
+            Self::Sadd => "SADD",
+            Self::Spop => "SPOP",
+            Self::Hset => "HSET",
+            Self::Zadd => "ZADD",
+            Self::Zpopmin => "ZPOPMIN",
+            Self::Lrange100 => "LRANGE_100",
+            Self::Lrange300 => "LRANGE_300",
+            Self::Lrange500 => "LRANGE_500",
+            Self::Lrange600 => "LRANGE_600",
+            Self::Mset => "MSET",
+            Self::VecLoad => "VECLOAD",
+            Self::VecQuery => "VECQUERY",
+            Self::VecDelete => "VECDELETE",
+            Self::VecUpdate => "VECUPDATE",
+            Self::Custom => "CUSTOM",
+        }
+    }
+
+    /// Check if workload requires dataset
+    pub fn requires_dataset(&self) -> bool {
+        matches!(self, Self::VecLoad | Self::VecQuery | Self::VecUpdate)
+    }
+
+    /// Check if workload is a vector search operation
+    pub fn is_vector_search(&self) -> bool {
+        matches!(
+            self,
+            Self::VecLoad | Self::VecQuery | Self::VecDelete | Self::VecUpdate
+        )
+    }
+
+    /// Check if workload modifies data (for read-from-replica routing)
+    pub fn is_write(&self) -> bool {
+        !matches!(
+            self,
+            Self::Ping
+                | Self::Get
+                | Self::VecQuery
+                | Self::Lrange100
+                | Self::Lrange300
+                | Self::Lrange500
+                | Self::Lrange600
+        )
+    }
+}
+
+impl std::fmt::Display for WorkloadType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_workload_types() {
+        assert_eq!(WorkloadType::parse("ping"), Some(WorkloadType::Ping));
+        assert_eq!(WorkloadType::parse("PING"), Some(WorkloadType::Ping));
+        assert_eq!(WorkloadType::parse("vecload"), Some(WorkloadType::VecLoad));
+        assert_eq!(WorkloadType::parse("vec-load"), Some(WorkloadType::VecLoad));
+        assert_eq!(WorkloadType::parse("unknown"), None);
+    }
+
+    #[test]
+    fn test_requires_dataset() {
+        assert!(WorkloadType::VecLoad.requires_dataset());
+        assert!(WorkloadType::VecQuery.requires_dataset());
+        assert!(!WorkloadType::Ping.requires_dataset());
+        assert!(!WorkloadType::Set.requires_dataset());
+    }
+
+    #[test]
+    fn test_is_write() {
+        assert!(!WorkloadType::Ping.is_write());
+        assert!(!WorkloadType::Get.is_write());
+        assert!(WorkloadType::Set.is_write());
+        assert!(WorkloadType::VecLoad.is_write());
+        assert!(!WorkloadType::VecQuery.is_write());
+    }
+}
