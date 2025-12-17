@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use crate::client::control_plane::ControlPlane;
 use crate::config::TlsConfig;
 use crate::utils::{ConnectionError, RespDecoder, RespEncoder, RespValue};
 
@@ -315,6 +316,30 @@ impl RawConnection {
             responses.push(self.read_response()?);
         }
         Ok(responses)
+    }
+}
+
+/// Implementation of ControlPlane trait for RawConnection
+///
+/// This allows RawConnection to be used generically where any ControlPlane is expected.
+impl ControlPlane for RawConnection {
+    fn execute(&mut self, args: &[&str]) -> io::Result<RespValue> {
+        let mut encoder = RespEncoder::with_capacity(256);
+        encoder.encode_command_str(args);
+        self.execute_encoded(&encoder)
+    }
+
+    fn execute_binary(&mut self, args: &[&[u8]]) -> io::Result<RespValue> {
+        let mut encoder = RespEncoder::with_capacity(256);
+        encoder.encode_command(args);
+        self.execute_encoded(&encoder)
+    }
+
+    fn execute_encoded(&mut self, encoder: &RespEncoder) -> io::Result<RespValue> {
+        // Delegate to the existing execute method
+        self.write_all(encoder.as_bytes())?;
+        self.flush()?;
+        self.read_response()
     }
 }
 
