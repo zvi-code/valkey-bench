@@ -204,11 +204,11 @@ impl Orchestrator {
     /// Get addresses for benchmark clients (primaries for cluster, seed for standalone)
     fn get_benchmark_addresses(&self) -> Vec<(String, u16)> {
         if let Some(ref topology) = self.cluster_topology {
-            // Use primary nodes for cluster mode
+            // Use selected nodes based on read-from-replica strategy
             topology
-                .primaries()
-                .filter(|n| n.is_available())
-                .map(|n| (n.host.clone(), n.port))
+                .select_nodes(self.config.read_from_replica)
+                .iter()
+                .map(|(_, node)| (node.host.clone(), node.port))
                 .collect()
         } else {
             // Use configured addresses for standalone
