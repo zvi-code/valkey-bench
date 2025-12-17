@@ -49,15 +49,17 @@ rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 webpki-roots = { version = "0.26", optional = true }
 
-# Control plane (cluster discovery) - redis-rs standalone
-redis = { version = "0.27", features = ["cluster", "tokio-comp"], optional = true }
-tokio = { version = "1", features = ["rt", "net", "time", "sync"], optional = true }
+# Glide-core for control plane operations (cluster discovery, INFO, FT.* commands)
+# Note: glide-redis is glide's internal redis fork, needed for Cmd/Value types used by glide-core::Client::send_command
+glide-core = { git = "https://github.com/valkey-io/valkey-glide", optional = true }
+glide-redis = { package = "redis", git = "https://github.com/valkey-io/valkey-glide", optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros"], optional = true }
 
 [features]
 default = ["native-tls-backend"]
 native-tls-backend = ["native-tls"]
 rustls-backend = ["rustls", "rustls-pemfile", "webpki-roots"]
-control-plane = ["redis", "tokio"]
+glide-control-plane = ["glide-core", "glide-redis", "tokio"]
 
 [profile.release]
 opt-level = 3
