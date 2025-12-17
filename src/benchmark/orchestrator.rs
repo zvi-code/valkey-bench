@@ -557,6 +557,48 @@ impl Orchestrator {
 
     /// Run a single benchmark test using event-driven I/O (like C's ae)
     pub fn run_test_event(&self, workload: WorkloadType) -> Result<BenchmarkResult> {
+        // For vec-load with partial prefill, calculate actual vectors to load
+        let effective_requests = if matches!(workload, WorkloadType::VecLoad) {
+            if let Some(ref tag_map) = self.cluster_tag_map {
+                tag_map.reset_unmapped_counter();
+                
+                // Calculate vectors to actually load (skip existing)
+                let already_mapped = tag_map.count();
+                let dataset_size = self.dataset.as_ref().map(|ds| ds.num_vectors()).unwrap_or(0);
+                let requested = self.config.requests.min(dataset_size);
+                let to_load = requested.saturating_sub(already_mapped);
+                
+                if already_mapped > 0 {
+                    info!(
+                        "Partial prefill: {} vectors already exist, {} to load (of {} requested)",
+                        already_mapped, to_load, self.config.requests
+                    );
+                }
+                
+                if to_load == 0 {
+                    info!("All {} vectors already loaded, nothing to do", already_mapped);
+                    // Return early with empty result
+                    return Ok(BenchmarkResult {
+                        test_name: workload.to_string(),
+                        total_requests: 0,
+                        duration: Duration::from_secs(0),
+                        throughput: 0.0,
+                        histogram: Histogram::new_with_bounds(1, 3_600_000_000, 3)
+                            .expect("Failed to create histogram"),
+                        recall_stats: super::worker::RecallStats::new(),
+                        error_count: 0,
+                        node_metrics: Vec::new(),
+                    });
+                }
+                
+                to_load
+            } else {
+                self.config.requests
+            }
+        } else {
+            self.config.requests
+        };
+
         // Create command template
         let template = create_template(
             workload,
@@ -572,7 +614,7 @@ impl Orchestrator {
         let counters = Arc::new(if let Some(duration) = self.config.duration_secs {
             GlobalCounters::with_duration(duration)
         } else {
-            GlobalCounters::with_requests(self.config.requests)
+            GlobalCounters::with_requests(effective_requests)
         });
 
         // Get addresses for workers
@@ -602,6 +644,8 @@ impl Orchestrator {
             let buffer = command_buffer.clone();
             let addrs = addresses.clone();
             let topo = topology.clone();
+            let tag_map = self.cluster_tag_map.clone();
+            let wl_type = workload;
 
             let handle = thread::Builder::new()
                 .name(format!("event-worker-{}", worker_id))
@@ -614,6 +658,8 @@ impl Orchestrator {
                         &config,
                         buffer,
                         topo.as_ref(),
+                        tag_map,
+                        wl_type,
                     ) {
                         Ok(worker) => worker.run(counters, dataset),
                         Err(e) => {

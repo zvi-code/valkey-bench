@@ -63,6 +63,8 @@ pub struct ClusterTagMap {
     pub is_cluster_mode: bool,
     /// Mutex for concurrent updates
     update_mutex: Mutex<()>,
+    /// Atomic counter for claiming unmapped vector IDs (for partial prefill)
+    unmapped_counter: AtomicU64,
 }
 
 impl ClusterTagMap {
@@ -75,6 +77,7 @@ impl ClusterTagMap {
             keys_scanned: AtomicU64::new(0),
             is_cluster_mode,
             update_mutex: Mutex::new(()),
+            unmapped_counter: AtomicU64::new(0),
         }
     }
 
@@ -139,6 +142,36 @@ impl ClusterTagMap {
     /// Get capacity
     pub fn capacity(&self) -> usize {
         self.mappings.len()
+    }
+
+    /// Claim the next unmapped vector ID (for partial prefill support)
+    ///
+    /// Atomically finds and claims the next vector ID that doesn't exist in the map.
+    /// This allows multiple workers to efficiently skip existing vectors without
+    /// duplicate work.
+    ///
+    /// Returns None when all vectors up to max_id have been processed or mapped.
+    pub fn claim_unmapped_id(&self, max_id: u64) -> Option<u64> {
+        loop {
+            let candidate = self.unmapped_counter.fetch_add(1, Ordering::Relaxed);
+            if candidate >= max_id {
+                return None; // All vectors processed
+            }
+            if !self.vector_exists(candidate) {
+                return Some(candidate);
+            }
+            // Vector already exists, try next one
+        }
+    }
+
+    /// Reset the unmapped counter (call before starting vec-load)
+    pub fn reset_unmapped_counter(&self) {
+        self.unmapped_counter.store(0, Ordering::Relaxed);
+    }
+
+    /// Get current unmapped counter value (for progress tracking)
+    pub fn unmapped_counter_value(&self) -> u64 {
+        self.unmapped_counter.load(Ordering::Relaxed)
     }
 }
 

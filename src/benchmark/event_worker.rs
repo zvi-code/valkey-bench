@@ -20,11 +20,11 @@ use mio::{Events, Interest, Poll, Token};
 use super::counters::GlobalCounters;
 use super::worker::RecallStats;
 use crate::client::{CommandBuffer, PlaceholderOffset, PlaceholderType};
-use crate::cluster::ClusterTopology;
+use crate::cluster::{ClusterTagMap, ClusterTopology};
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
 use crate::utils::{RespDecoder, RespValue};
-use crate::workload::{extract_numeric_ids, parse_search_response};
+use crate::workload::{extract_numeric_ids, parse_search_response, WorkloadType};
 use std::sync::Arc;
 
 /// CRC16 implementation for Redis cluster slot calculation (XMODEM)
@@ -383,6 +383,10 @@ pub struct EventWorker {
     compute_recall: bool,
     error_count: u64,
     requests_processed: u64,
+    /// Cluster tag map for partial prefill (skip existing vectors)
+    tag_map: Option<Arc<ClusterTagMap>>,
+    /// Workload type (for vec-load skip logic)
+    workload_type: WorkloadType,
 }
 
 impl EventWorker {
@@ -395,6 +399,8 @@ impl EventWorker {
     /// * `config` - Benchmark configuration
     /// * `command_template` - Pre-built command template
     /// * `topology` - Optional cluster topology for slot-aware routing
+    /// * `tag_map` - Optional cluster tag map for partial prefill support
+    /// * `workload_type` - Workload type (for vec-load skip logic)
     pub fn new(
         id: usize,
         addresses: Vec<(String, u16)>,
@@ -402,6 +408,8 @@ impl EventWorker {
         config: &BenchmarkConfig,
         command_template: CommandBuffer,
         topology: Option<&ClusterTopology>,
+        tag_map: Option<Arc<ClusterTagMap>>,
+        workload_type: WorkloadType,
     ) -> io::Result<Self> {
         let poll = Poll::new()?;
         let mut clients = Vec::new();
@@ -490,6 +498,8 @@ impl EventWorker {
             compute_recall,
             error_count: 0,
             requests_processed: 0,
+            tag_map,
+            workload_type,
         })
     }
 
@@ -685,7 +695,24 @@ impl EventWorker {
                     }
                     PlaceholderType::Vector => {
                         if let Some(ds) = dataset {
-                            let idx = counters.next_dataset_idx() % ds.num_vectors();
+                            // For vec-load, use claim_unmapped_id to skip existing vectors
+                            let idx = if matches!(self.workload_type, WorkloadType::VecLoad) {
+                                if let Some(ref tm) = self.tag_map {
+                                    // Claim next unmapped vector ID (skips existing)
+                                    match tm.claim_unmapped_id(ds.num_vectors()) {
+                                        Some(id) => id,
+                                        None => {
+                                            // All vectors loaded, skip this command
+                                            // Mark client as done by clearing pending
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    counters.next_dataset_idx() % ds.num_vectors()
+                                }
+                            } else {
+                                counters.next_dataset_idx() % ds.num_vectors()
+                            };
                             let vec_bytes = ds.get_vector_bytes(idx);
                             self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
                                 .copy_from_slice(vec_bytes);
