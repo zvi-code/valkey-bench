@@ -3,7 +3,7 @@
 //! This module provides higher-level operations for managing vector search indices
 //! and executing search queries.
 
-use crate::client::RawConnection;
+use crate::client::{ControlPlane, RawConnection};
 use crate::config::SearchConfig;
 use crate::metrics::ft_info::{EngineType, FtInfoResult};
 use crate::utils::{RespEncoder, RespValue};
@@ -99,7 +99,7 @@ pub fn create_index(
     encoder.encode_command(&args);
 
     // Execute
-    match conn.execute(&encoder) {
+    match conn.execute_encoded(&encoder) {
         Ok(RespValue::SimpleString(s)) if s == "OK" => Ok(()),
         Ok(RespValue::Error(e)) => Err(e),
         Ok(other) => Err(format!("Unexpected response: {:?}", other)),
@@ -112,7 +112,7 @@ pub fn drop_index(conn: &mut RawConnection, index_name: &str) -> Result<(), Stri
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["FT.DROPINDEX", index_name]);
 
-    match conn.execute(&encoder) {
+    match conn.execute_encoded(&encoder) {
         Ok(RespValue::SimpleString(s)) if s == "OK" => Ok(()),
         Ok(RespValue::Error(e)) => {
             // Ignore "Unknown Index name" errors
@@ -137,7 +137,7 @@ pub fn get_index_info(conn: &mut RawConnection, index_name: &str) -> Result<Inde
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["FT.INFO", index_name]);
 
-    match conn.execute(&encoder) {
+    match conn.execute_encoded(&encoder) {
         Ok(RespValue::Error(e)) => Err(e),
         Ok(reply) => {
             // Use proper engine-aware parsing
@@ -165,7 +165,7 @@ fn detect_engine_type(conn: &mut RawConnection) -> EngineType {
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["INFO", "SEARCH"]);
 
-    match conn.execute(&encoder) {
+    match conn.execute_encoded(&encoder) {
         Ok(RespValue::BulkString(data)) => {
             let info_str = String::from_utf8_lossy(&data);
             EngineType::detect(&info_str)
@@ -227,7 +227,7 @@ pub fn wait_for_indexing(
         let mut encoder = RespEncoder::with_capacity(64);
         encoder.encode_command_str(&["FT.INFO", index_name]);
 
-        let ft_info = match conn.execute(&encoder) {
+        let ft_info = match conn.execute_encoded(&encoder) {
             Ok(RespValue::Error(e)) => {
                 pb.finish_and_clear();
                 return Err(e);

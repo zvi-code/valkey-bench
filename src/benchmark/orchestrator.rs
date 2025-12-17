@@ -14,7 +14,7 @@ use tracing::info;
 use super::counters::GlobalCounters;
 use super::event_worker::{EventWorker, EventWorkerResult};
 use super::worker::{BenchmarkWorker, RecallStats, WorkerResult};
-use crate::client::{BenchmarkClient, ConnectionFactory};
+use crate::client::{BenchmarkClient, ConnectionFactory, ControlPlane, ControlPlaneExt};
 use crate::cluster::{
     build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, TopologyManager,
 };
@@ -1002,7 +1002,7 @@ fn detect_engine_type(conn: &mut crate::client::RawConnection) -> EngineType {
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["INFO", "SEARCH"]);
 
-    match conn.execute(&encoder) {
+    match conn.execute_encoded(&encoder) {
         Ok(RespValue::BulkString(data)) => {
             let info_str = String::from_utf8_lossy(&data);
             EngineType::detect(&info_str)

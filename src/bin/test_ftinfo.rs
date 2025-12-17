@@ -5,7 +5,7 @@
 use std::env;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::metrics::{
     convert_ftinfo_to_lines, convert_memdb_ftinfo_to_lines, EngineType, FtInfoResult,
     get_node_progress, parse_ftinfo_lines,
@@ -34,9 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["INFO", "SERVER"]);
 
-    let info_reply = conn.execute(&encoder)?;
+    let info_reply = conn.execute_encoded(&encoder)?;
     let info_response = match &info_reply {
-        RespValue::BulkString(data) => String::from_utf8_lossy(data).to_string(),
+        RespValue::BulkString(data) => String::from_utf8_lossy(&data).to_string(),
         _ => String::new(),
     };
 
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = RespEncoder::with_capacity(128);
     encoder.encode_command_str(&["FT.INFO", index_name]);
 
-    let resp_value = conn.execute(&encoder)?;
+    let resp_value = conn.execute_encoded(&encoder)?;
 
     // Check for errors
     if let RespValue::Error(ref e) = resp_value {

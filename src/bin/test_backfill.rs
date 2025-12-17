@@ -5,7 +5,7 @@
 use std::env;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::metrics::{
     wait_for_index_backfill_complete, BackfillWaitConfig, EngineType,
 };
@@ -33,9 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["INFO", "SERVER"]);
 
-    let info_reply = conn.execute(&encoder)?;
+    let info_reply = conn.execute_encoded(&encoder)?;
     let info_response = match &info_reply {
-        RespValue::BulkString(data) => String::from_utf8_lossy(data).to_string(),
+        RespValue::BulkString(data) => String::from_utf8_lossy(&data).to_string(),
         _ => String::new(),
     };
 
@@ -47,9 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["CLUSTER", "NODES"]);
 
-    let nodes_reply = conn.execute(&encoder)?;
+    let nodes_reply = conn.execute_encoded(&encoder)?;
     let nodes_response = match &nodes_reply {
-        RespValue::BulkString(data) => String::from_utf8_lossy(data).to_string(),
+        RespValue::BulkString(data) => String::from_utf8_lossy(&data).to_string(),
         _ => String::new(),
     };
 

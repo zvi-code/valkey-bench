@@ -3,7 +3,7 @@
 use std::env;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::utils::{RespEncoder, RespValue};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = RespEncoder::with_capacity(128);
     encoder.encode_command_str(&["SCAN", "0", "MATCH", pattern, "COUNT", "10"]);
 
-    let reply = conn.execute(&encoder)?;
+    let reply = conn.execute_encoded(&encoder)?;
 
     match reply {
         RespValue::Array(arr) if arr.len() == 2 => {

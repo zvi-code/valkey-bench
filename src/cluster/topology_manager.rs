@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
 use super::topology::ClusterTopology;
-use crate::client::{ConnectionFactory, RawConnection};
+use crate::client::{ConnectionFactory, ControlPlaneExt, RawConnection};
 
 /// Redirect information parsed from MOVED/ASK error
 #[derive(Debug, Clone)]

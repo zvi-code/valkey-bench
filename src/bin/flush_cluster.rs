@@ -3,7 +3,7 @@
 use std::env;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::cluster::ClusterTopology;
 use valkey_search_benchmark::utils::{RespEncoder, RespValue};
 
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get cluster nodes
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["CLUSTER", "NODES"]);
-    let reply = conn.execute(&encoder)?;
+    let reply = conn.execute_encoded(&encoder)?;
 
     let nodes_str = match reply {
         RespValue::BulkString(data) => String::from_utf8_lossy(&data).to_string(),
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Not a cluster, flushing single node...");
             let mut encoder = RespEncoder::with_capacity(64);
             encoder.encode_command_str(&["FLUSHALL"]);
-            let reply = conn.execute(&encoder)?;
+            let reply = conn.execute_encoded(&encoder)?;
             println!("Result: {:?}", reply);
             return Ok(());
         }
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(mut node_conn) => {
                 let mut encoder = RespEncoder::with_capacity(64);
                 encoder.encode_command_str(&["FLUSHALL"]);
-                match node_conn.execute(&encoder) {
+                match node_conn.execute_encoded(&encoder) {
                     Ok(reply) => println!("  {:?}", reply),
                     Err(e) => println!("  Error: {}", e),
                 }

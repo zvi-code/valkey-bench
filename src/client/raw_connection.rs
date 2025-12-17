@@ -7,7 +7,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use crate::client::control_plane::ControlPlane;
+use crate::client::control_plane::{ControlPlane, ControlPlaneExt};
 use crate::config::TlsConfig;
 use crate::utils::{ConnectionError, RespDecoder, RespEncoder, RespValue};
 
@@ -212,14 +212,10 @@ impl RawConnection {
         }
     }
 
-    /// Send command and receive response
-    pub fn execute(&mut self, encoder: &RespEncoder) -> io::Result<RespValue> {
-        self.write_all(encoder.as_bytes())?;
-        self.flush()?;
-        self.read_response()
-    }
-
     /// Send AUTH command
+    /// 
+    /// Note: This returns ConnectionError for better error handling during connection setup.
+    /// For general command execution, use the ControlPlane trait methods.
     pub fn authenticate(
         &mut self,
         password: &str,
@@ -233,7 +229,7 @@ impl RawConnection {
         }
 
         let response = self
-            .execute(&encoder)
+            .execute_encoded(&encoder)
             .map_err(|e| ConnectionError::AuthFailed(format!("IO error: {}", e)))?;
 
         match response {
@@ -244,51 +240,6 @@ impl RawConnection {
                 other
             ))),
         }
-    }
-
-    /// Send SELECT command (for standalone mode)
-    pub fn select_db(&mut self, db: u32) -> io::Result<RespValue> {
-        let mut encoder = RespEncoder::with_capacity(32);
-        let db_str = db.to_string();
-        encoder.encode_command_str(&["SELECT", &db_str]);
-        self.execute(&encoder)
-    }
-
-    /// Send PING command
-    pub fn ping(&mut self) -> io::Result<bool> {
-        let mut encoder = RespEncoder::with_capacity(32);
-        encoder.encode_command_str(&["PING"]);
-
-        let response = self.execute(&encoder)?;
-        match response {
-            RespValue::SimpleString(s) => Ok(s == "PONG"),
-            _ => Ok(false),
-        }
-    }
-
-    /// Send CLUSTER NODES command and return raw response
-    pub fn cluster_nodes(&mut self) -> io::Result<String> {
-        let mut encoder = RespEncoder::with_capacity(32);
-        encoder.encode_command_str(&["CLUSTER", "NODES"]);
-
-        let response = self.execute(&encoder)?;
-        match response {
-            RespValue::BulkString(data) => {
-                String::from_utf8(data).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("Invalid UTF-8: {}", e))
-                })
-            }
-            RespValue::Error(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Unexpected CLUSTER NODES response: {:?}", other),
-            )),
-        }
-    }
-
-    /// Check if this is a cluster node (returns true if CLUSTER NODES works)
-    pub fn is_cluster(&mut self) -> bool {
-        self.cluster_nodes().is_ok()
     }
 
     /// Set read timeout
@@ -380,9 +331,9 @@ impl ConnectionFactory {
             conn.authenticate(password, self.auth_username.as_deref())?;
         }
 
-        // Select database if configured
+        // Select database if configured (uses ControlPlaneExt trait)
         if let Some(db) = self.dbnum {
-            conn.select_db(db)
+            ControlPlaneExt::select_db(&mut conn, db)
                 .map_err(|e| ConnectionError::ConnectFailed {
                     host: host.to_string(),
                     port,
@@ -407,7 +358,8 @@ mod tests {
         let mut conn = RawConnection::connect_tcp("127.0.0.1", 6379, Duration::from_secs(5))
             .expect("Failed to connect");
 
-        assert!(conn.ping().expect("Ping failed"));
+        // Use trait method
+        assert!(ControlPlaneExt::ping(&mut conn).expect("Ping failed"));
     }
 
     #[test]
@@ -426,6 +378,7 @@ mod tests {
         let mut conn = factory
             .create("127.0.0.1", 6379)
             .expect("Failed to connect");
-        assert!(conn.ping().expect("Ping failed"));
+        // Use trait method
+        assert!(ControlPlaneExt::ping(&mut conn).expect("Ping failed"));
     }
 }

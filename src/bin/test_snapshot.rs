@@ -8,7 +8,7 @@ use std::env;
 use std::thread;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::metrics::{
     compare_snapshots, default_search_info_fields, print_per_node_diff_all, print_snapshot_diff,
     SnapshotBuilder,
@@ -19,7 +19,7 @@ fn get_info_search(conn: &mut RawConnection) -> Result<String, Box<dyn std::erro
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["INFO", "SEARCH"]);
 
-    let reply = conn.execute(&encoder)?;
+    let reply = conn.execute_encoded(&encoder)?;
     match reply {
         RespValue::BulkString(data) => Ok(String::from_utf8_lossy(&data).to_string()),
         RespValue::Error(e) => Err(format!("Server error: {}", e).into()),
@@ -58,7 +58,7 @@ fn run_vector_queries(
             b"2",
         ]);
 
-        let reply = conn.execute(&encoder)?;
+        let reply = conn.execute_encoded(&encoder)?;
 
         // Print first result to show it's working
         if i == 0 {
@@ -80,7 +80,7 @@ fn get_cluster_primaries(
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["CLUSTER", "NODES"]);
 
-    let reply = conn.execute(&encoder)?;
+    let reply = conn.execute_encoded(&encoder)?;
     let nodes_str = match reply {
         RespValue::BulkString(data) => String::from_utf8_lossy(&data).to_string(),
         RespValue::Error(e) => return Err(format!("Cluster error: {}", e).into()),

@@ -7,7 +7,7 @@
 use std::env;
 use std::time::Duration;
 
-use valkey_search_benchmark::client::RawConnection;
+use valkey_search_benchmark::client::{ControlPlane, RawConnection};
 use valkey_search_benchmark::cluster::{
     build_vector_id_mappings, parse_vector_key, ClusterScanConfig, ClusterTagMap, ClusterTopology,
 };
@@ -17,7 +17,7 @@ fn get_cluster_nodes(conn: &mut RawConnection) -> Result<String, Box<dyn std::er
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["CLUSTER", "NODES"]);
 
-    let reply = conn.execute(&encoder)?;
+    let reply = conn.execute_encoded(&encoder)?;
     match reply {
         RespValue::BulkString(data) => Ok(String::from_utf8_lossy(&data).to_string()),
         RespValue::Error(e) => Err(format!("Cluster error: {}", e).into()),
@@ -47,7 +47,7 @@ fn count_keys_on_node(
             "1000",
         ]);
 
-        let reply = conn.execute(&encoder)?;
+        let reply = conn.execute_encoded(&encoder)?;
 
         let (new_cursor, keys) = match reply {
             RespValue::Array(arr) if arr.len() == 2 => {

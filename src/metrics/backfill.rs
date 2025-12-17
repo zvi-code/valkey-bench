@@ -12,7 +12,7 @@ use super::ft_info::{
     convert_ftinfo_to_lines, convert_memdb_ftinfo_to_lines, parse_ftinfo_lines, EngineType,
     FtInfoResult, IndexStatus,
 };
-use crate::client::RawConnection;
+use crate::client::{ControlPlane, RawConnection};
 use crate::cluster::ClusterNode;
 use crate::utils::{RespEncoder, RespValue};
 
@@ -41,7 +41,7 @@ pub fn get_node_progress_ec(
     encoder.encode_command_str(&["FT.INFO", index_name]);
 
     let reply = conn
-        .execute(&encoder)
+        .execute_encoded(&encoder)
         .map_err(|e| format!("FT.INFO failed: {}", e))?;
 
     let lines = convert_ftinfo_to_lines(&reply, None);
@@ -88,7 +88,7 @@ pub fn get_node_progress_memorydb(
     encoder.encode_command_str(&["FT.INFO", index_name]);
 
     let ft_info_reply = conn
-        .execute(&encoder)
+        .execute_encoded(&encoder)
         .map_err(|e| format!("FT.INFO failed: {}", e))?;
 
     let ft_info_lines = convert_memdb_ftinfo_to_lines(&ft_info_reply, None);
@@ -99,7 +99,7 @@ pub fn get_node_progress_memorydb(
     encoder.encode_command_str(&["INFO", "SEARCH"]);
 
     let search_info_reply = conn
-        .execute(&encoder)
+        .execute_encoded(&encoder)
         .map_err(|e| format!("INFO SEARCH failed: {}", e))?;
 
     let search_info_lines = match &search_info_reply {

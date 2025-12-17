@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::client::RawConnection;
+use crate::client::{ControlPlane, RawConnection};
 use crate::cluster::ClusterNode;
 use crate::utils::{RespEncoder, RespValue};
 
@@ -365,7 +365,7 @@ fn scan_node(
             &batch_size.to_string(),
         ]);
 
-        let reply = conn.execute(&encoder).map_err(|e| format!("SCAN failed: {}", e))?;
+        let reply = conn.execute_encoded(&encoder).map_err(|e| format!("SCAN failed: {}", e))?;
 
         // Parse response: [cursor, [keys...]]
         let (new_cursor, keys) = match reply {
