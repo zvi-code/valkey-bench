@@ -232,7 +232,7 @@ impl Orchestrator {
         let counters = Arc::new(if let Some(duration) = self.config.duration_secs {
             GlobalCounters::with_duration(duration)
         } else {
-            GlobalCounters::new()
+            GlobalCounters::with_requests(self.config.requests)
         });
 
         // Calculate clients per thread
@@ -488,7 +488,7 @@ impl Orchestrator {
         let counters = Arc::new(if let Some(duration) = self.config.duration_secs {
             GlobalCounters::with_duration(duration)
         } else {
-            GlobalCounters::new()
+            GlobalCounters::with_requests(self.config.requests)
         });
 
         // Get addresses for workers

@@ -37,10 +37,13 @@ pub struct GlobalCounters {
 
     /// Duration limit (if set, ignores request count)
     duration_limit: Option<Duration>,
+
+    /// Total request limit (for request-count based benchmarks)
+    total_requests: u64,
 }
 
 impl GlobalCounters {
-    /// Create new counters initialized to zero
+    /// Create new counters initialized to zero (unlimited requests)
     pub fn new() -> Self {
         Self {
             requests_issued: AtomicU64::new(0),
@@ -52,6 +55,23 @@ impl GlobalCounters {
             shutdown: AtomicBool::new(false),
             start_time: None,
             duration_limit: None,
+            total_requests: u64::MAX,
+        }
+    }
+
+    /// Create counters with a request limit
+    pub fn with_requests(total: u64) -> Self {
+        Self {
+            requests_issued: AtomicU64::new(0),
+            requests_finished: AtomicU64::new(0),
+            seq_key_counter: AtomicU64::new(0),
+            dataset_counter: AtomicU64::new(0),
+            query_counter: AtomicU64::new(0),
+            error_count: AtomicU64::new(0),
+            shutdown: AtomicBool::new(false),
+            start_time: None,
+            duration_limit: None,
+            total_requests: total,
         }
     }
 
@@ -67,6 +87,7 @@ impl GlobalCounters {
             shutdown: AtomicBool::new(false),
             start_time: Some(Instant::now()),
             duration_limit: Some(Duration::from_secs(duration_secs)),
+            total_requests: u64::MAX,
         }
     }
 
@@ -86,7 +107,35 @@ impl GlobalCounters {
         self.duration_limit.is_some()
     }
 
-    /// Claim a batch of requests
+    /// Claim a batch of requests (uses internal total_requests limit)
+    /// Returns the starting request number, or None if quota exhausted or duration exceeded
+    #[inline]
+    pub fn claim_batch(&self, batch_size: u64) -> Option<u64> {
+        // Check duration first (time-based mode)
+        if self.is_duration_exceeded() {
+            return None;
+        }
+
+        // In duration mode, we don't check request count
+        if self.is_duration_mode() {
+            return Some(self.requests_issued.fetch_add(batch_size, Ordering::Relaxed));
+        }
+
+        // Request count mode - use internal limit
+        let issued = self
+            .requests_issued
+            .fetch_add(batch_size, Ordering::Relaxed);
+        if issued >= self.total_requests {
+            // Undo the claim
+            self.requests_issued
+                .fetch_sub(batch_size, Ordering::Relaxed);
+            None
+        } else {
+            Some(issued)
+        }
+    }
+
+    /// Claim a batch of requests (with explicit total_requests override)
     /// Returns the starting request number, or None if quota exhausted or duration exceeded
     #[inline]
     pub fn claim_requests(&self, batch_size: u64, total_requests: u64) -> Option<u64> {
@@ -118,6 +167,15 @@ impl GlobalCounters {
     #[inline]
     pub fn record_finished(&self, count: u64) {
         self.requests_finished.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Check if all requests have been issued (for non-duration mode)
+    #[inline]
+    pub fn is_complete(&self) -> bool {
+        if self.is_duration_mode() {
+            return false; // Duration mode doesn't complete based on count
+        }
+        self.requests_issued.load(Ordering::Relaxed) >= self.total_requests
     }
 
     /// Get next sequential key value

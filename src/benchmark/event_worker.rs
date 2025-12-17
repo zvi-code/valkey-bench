@@ -428,7 +428,7 @@ impl EventWorker {
         // Start all clients
         for client_idx in 0..self.clients.len() {
             if counters
-                .claim_requests(batch_size, u64::MAX)
+                .claim_batch(batch_size)
                 .is_some()
             {
                 self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
@@ -440,6 +440,17 @@ impl EventWorker {
         loop {
             if counters.is_shutdown() || counters.is_duration_exceeded() {
                 break;
+            }
+
+            // Check if all requests have been issued and all clients are idle
+            if counters.is_complete() {
+                let all_idle = self
+                    .clients
+                    .iter()
+                    .all(|c| c.state == ClientState::Idle);
+                if all_idle {
+                    break;
+                }
             }
 
             // Poll for events - use short timeout to also handle idle clients
@@ -494,7 +505,7 @@ impl EventWorker {
 
                                 // Start next request immediately
                                 if counters
-                                    .claim_requests(batch_size, u64::MAX)
+                                    .claim_batch(batch_size)
                                     .is_some()
                                 {
                                     self.fill_placeholders_for(
@@ -528,7 +539,7 @@ impl EventWorker {
                         break;
                     }
                     if counters
-                        .claim_requests(batch_size, u64::MAX)
+                        .claim_batch(batch_size)
                         .is_some()
                     {
                         self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
