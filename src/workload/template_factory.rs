@@ -7,88 +7,77 @@ use super::key_format::DEFAULT_KEY_WIDTH;
 use super::workload_type::WorkloadType;
 
 /// Create command template for given workload type
+/// 
+/// When `cluster_mode` is true, key-value commands will use cluster-tagged keys
+/// (e.g., `key:{ABC}:000000000001`) to ensure proper routing without MOVED redirects.
 pub fn create_template(
     workload: WorkloadType,
     key_prefix: &str,
     data_size: usize,
     search_config: Option<&SearchConfig>,
+    cluster_mode: bool,
 ) -> CommandTemplate {
     let key_width = DEFAULT_KEY_WIDTH;
+
+    // Helper to create key arg based on cluster mode
+    let add_key = |template: CommandTemplate| -> CommandTemplate {
+        if cluster_mode {
+            template.arg_prefixed_key_with_cluster_tag(key_prefix, key_width)
+        } else {
+            template.arg_prefixed_key(key_prefix, key_width)
+        }
+    };
 
     match workload {
         // === Simple commands ===
         WorkloadType::Ping => CommandTemplate::new("PING").arg_str("PING"),
 
         // === Key-value commands ===
-        WorkloadType::Set => CommandTemplate::new("SET")
-            .arg_str("SET")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Set => add_key(CommandTemplate::new("SET").arg_str("SET"))
             .arg_literal(&vec![b'x'; data_size]),
 
-        WorkloadType::Get => CommandTemplate::new("GET")
-            .arg_str("GET")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Get => add_key(CommandTemplate::new("GET").arg_str("GET")),
 
-        WorkloadType::Incr => CommandTemplate::new("INCR")
-            .arg_str("INCR")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Incr => add_key(CommandTemplate::new("INCR").arg_str("INCR")),
 
         // === List commands ===
-        WorkloadType::Lpush => CommandTemplate::new("LPUSH")
-            .arg_str("LPUSH")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Lpush => add_key(CommandTemplate::new("LPUSH").arg_str("LPUSH"))
             .arg_literal(&vec![b'x'; data_size]),
 
-        WorkloadType::Rpush => CommandTemplate::new("RPUSH")
-            .arg_str("RPUSH")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Rpush => add_key(CommandTemplate::new("RPUSH").arg_str("RPUSH"))
             .arg_literal(&vec![b'x'; data_size]),
 
-        WorkloadType::Lpop => CommandTemplate::new("LPOP")
-            .arg_str("LPOP")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Lpop => add_key(CommandTemplate::new("LPOP").arg_str("LPOP")),
 
-        WorkloadType::Rpop => CommandTemplate::new("RPOP")
-            .arg_str("RPOP")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Rpop => add_key(CommandTemplate::new("RPOP").arg_str("RPOP")),
 
-        WorkloadType::Lrange100 => create_lrange_template(key_prefix, key_width, 100),
-        WorkloadType::Lrange300 => create_lrange_template(key_prefix, key_width, 300),
-        WorkloadType::Lrange500 => create_lrange_template(key_prefix, key_width, 500),
-        WorkloadType::Lrange600 => create_lrange_template(key_prefix, key_width, 600),
+        WorkloadType::Lrange100 => create_lrange_template(key_prefix, key_width, 100, cluster_mode),
+        WorkloadType::Lrange300 => create_lrange_template(key_prefix, key_width, 300, cluster_mode),
+        WorkloadType::Lrange500 => create_lrange_template(key_prefix, key_width, 500, cluster_mode),
+        WorkloadType::Lrange600 => create_lrange_template(key_prefix, key_width, 600, cluster_mode),
 
         // === Set commands ===
-        WorkloadType::Sadd => CommandTemplate::new("SADD")
-            .arg_str("SADD")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Sadd => add_key(CommandTemplate::new("SADD").arg_str("SADD"))
             .arg_rand_int(key_width),
 
-        WorkloadType::Spop => CommandTemplate::new("SPOP")
-            .arg_str("SPOP")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Spop => add_key(CommandTemplate::new("SPOP").arg_str("SPOP")),
 
         // === Hash commands ===
-        WorkloadType::Hset => CommandTemplate::new("HSET")
-            .arg_str("HSET")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Hset => add_key(CommandTemplate::new("HSET").arg_str("HSET"))
             .arg_str("field")
             .arg_literal(&vec![b'x'; data_size]),
 
         // === Sorted set commands ===
-        WorkloadType::Zadd => CommandTemplate::new("ZADD")
-            .arg_str("ZADD")
-            .arg_prefixed_key(key_prefix, key_width)
+        WorkloadType::Zadd => add_key(CommandTemplate::new("ZADD").arg_str("ZADD"))
             .arg_rand_int(key_width) // score
             .arg_str("member"),
 
-        WorkloadType::Zpopmin => CommandTemplate::new("ZPOPMIN")
-            .arg_str("ZPOPMIN")
-            .arg_prefixed_key(key_prefix, key_width),
+        WorkloadType::Zpopmin => add_key(CommandTemplate::new("ZPOPMIN").arg_str("ZPOPMIN")),
 
         // === Multi-key commands ===
-        WorkloadType::Mset => create_mset_template(key_prefix, key_width, data_size, 10),
+        WorkloadType::Mset => create_mset_template(key_prefix, key_width, data_size, 10, cluster_mode),
 
-        // === Vector search commands ===
+        // === Vector search commands (always use cluster tags) ===
         WorkloadType::VecLoad => {
             let sc = search_config.expect("VecLoad requires search config");
             create_vec_load_template(&sc.prefix, key_width, &sc.vector_field, sc.vec_byte_len())
@@ -120,10 +109,17 @@ pub fn create_template(
 }
 
 /// Create LRANGE template with specified count
-fn create_lrange_template(key_prefix: &str, key_width: usize, count: i32) -> CommandTemplate {
-    CommandTemplate::new(&format!("LRANGE_{}", count))
-        .arg_str("LRANGE")
-        .arg_prefixed_key(key_prefix, key_width)
+fn create_lrange_template(key_prefix: &str, key_width: usize, count: i32, cluster_mode: bool) -> CommandTemplate {
+    let template = CommandTemplate::new(&format!("LRANGE_{}", count))
+        .arg_str("LRANGE");
+    
+    let template = if cluster_mode {
+        template.arg_prefixed_key_with_cluster_tag(key_prefix, key_width)
+    } else {
+        template.arg_prefixed_key(key_prefix, key_width)
+    };
+    
+    template
         .arg_str("0")
         .arg_str(&(count - 1).to_string())
 }
@@ -134,13 +130,17 @@ fn create_mset_template(
     key_width: usize,
     data_size: usize,
     num_keys: usize,
+    cluster_mode: bool,
 ) -> CommandTemplate {
     let mut template = CommandTemplate::new("MSET").arg_str("MSET");
 
     for _ in 0..num_keys {
-        template = template
-            .arg_prefixed_key(key_prefix, key_width)
-            .arg_literal(&vec![b'x'; data_size]);
+        template = if cluster_mode {
+            template.arg_prefixed_key_with_cluster_tag(key_prefix, key_width)
+        } else {
+            template.arg_prefixed_key(key_prefix, key_width)
+        };
+        template = template.arg_literal(&vec![b'x'; data_size]);
     }
 
     template
@@ -207,21 +207,29 @@ mod tests {
 
     #[test]
     fn test_create_ping_template() {
-        let template = create_template(WorkloadType::Ping, "key:", 3, None);
+        let template = create_template(WorkloadType::Ping, "key:", 3, None, false);
         let buf = template.build(1);
         assert!(buf.placeholders[0].is_empty());
     }
 
     #[test]
     fn test_create_set_template() {
-        let template = create_template(WorkloadType::Set, "key:", 100, None);
+        let template = create_template(WorkloadType::Set, "key:", 100, None, false);
         let buf = template.build(1);
         assert_eq!(buf.placeholders[0].len(), 1); // Key placeholder
     }
 
     #[test]
+    fn test_create_set_template_cluster_mode() {
+        let template = create_template(WorkloadType::Set, "key:", 100, None, true);
+        let buf = template.build(1);
+        // In cluster mode: cluster_tag + key = 2 placeholders
+        assert_eq!(buf.placeholders[0].len(), 2);
+    }
+
+    #[test]
     fn test_create_get_template() {
-        let template = create_template(WorkloadType::Get, "key:", 3, None);
+        let template = create_template(WorkloadType::Get, "key:", 3, None, false);
         let buf = template.build(1);
         assert_eq!(buf.placeholders[0].len(), 1); // Key placeholder
     }
@@ -242,7 +250,7 @@ mod tests {
             nocontent: false,
         };
 
-        let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config));
+        let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config), false);
         let buf = template.build(1);
 
         // Should have cluster_tag, key, and vector placeholders

@@ -199,14 +199,28 @@ pub fn wait_for_indexing(
     index_name: &str,
     timeout_secs: u64,
 ) -> Result<(), String> {
+    use indicatif::{ProgressBar, ProgressStyle};
     use std::time::{Duration, Instant};
 
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
-    let poll_interval = Duration::from_millis(100);
+    let poll_interval = Duration::from_millis(500);
 
     // Detect engine type once
     let engine_type = detect_engine_type(conn);
+
+    // Create progress bar (100 units = 100%)
+    let pb = ProgressBar::new(100);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% ({msg})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    pb.set_message("initializing...");
+
+    let mut last_docs = 0i64;
+    let mut last_time = Instant::now();
 
     loop {
         // Get FT.INFO with engine-aware parsing
@@ -214,19 +228,65 @@ pub fn wait_for_indexing(
         encoder.encode_command_str(&["FT.INFO", index_name]);
 
         let ft_info = match conn.execute(&encoder) {
-            Ok(RespValue::Error(e)) => return Err(e),
+            Ok(RespValue::Error(e)) => {
+                pb.finish_and_clear();
+                return Err(e);
+            }
             Ok(reply) => FtInfoResult::from_response(&reply, engine_type),
-            Err(e) => return Err(format!("IO error: {}", e)),
+            Err(e) => {
+                pb.finish_and_clear();
+                return Err(format!("IO error: {}", e));
+            }
         };
+
+        // Calculate progress percentage
+        let progress_pct = if ft_info.backfill_in_progress {
+            (ft_info.backfill_complete_percent * 100.0) as u64
+        } else if ft_info.is_ready() {
+            100
+        } else {
+            0
+        };
+
+        // Calculate docs/sec rate
+        let now = Instant::now();
+        let elapsed = now.duration_since(last_time).as_secs_f64();
+        let docs_delta = (ft_info.num_docs - last_docs).max(0);
+        let docs_per_sec = if elapsed > 0.1 {
+            docs_delta as f64 / elapsed
+        } else {
+            0.0
+        };
+
+        // Update for next iteration
+        if elapsed > 0.5 {
+            last_docs = ft_info.num_docs;
+            last_time = now;
+        }
+
+        // Update progress bar
+        pb.set_position(progress_pct);
+        if ft_info.backfill_in_progress {
+            pb.set_message(format!(
+                "{} docs, {:.0} docs/sec",
+                ft_info.num_docs, docs_per_sec
+            ));
+        } else if ft_info.is_ready() {
+            pb.set_message(format!("{} docs indexed", ft_info.num_docs));
+        } else {
+            pb.set_message(format!("state: {:?}", ft_info.status));
+        }
 
         // Engine-specific readiness check
         // For EC: state=ready AND backfill_in_progress=false
         // For MemoryDB: status=AVAILABLE AND degradation=0
         if ft_info.is_ready() {
+            pb.finish_with_message(format!("complete - {} docs indexed", ft_info.num_docs));
             return Ok(());
         }
 
         if start.elapsed() > timeout {
+            pb.finish_and_clear();
             return Err(format!(
                 "Timeout waiting for index {} to complete ({}% indexed, {} docs, backfill_in_progress={})",
                 index_name,

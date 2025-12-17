@@ -21,10 +21,10 @@ use crate::cluster::{
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
 use crate::metrics::reporter::{BenchmarkResults, OutputFormat};
-use crate::metrics::{MetricsCollector, MetricsReporter, NodeMetrics};
+use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
-    create_index, create_template, drop_index, get_index_info, wait_for_indexing, WorkloadType,
+    create_index, create_template, drop_index, get_index_info, WorkloadType,
 };
 
 /// Benchmark result summary
@@ -301,12 +301,14 @@ impl Orchestrator {
 
     /// Run a single benchmark test
     pub fn run_test(&self, workload: WorkloadType) -> Result<BenchmarkResult> {
-        // Create command template
+        // Create command template (use cluster mode if we have cluster topology)
+        let cluster_mode = self.cluster_topology.is_some();
         let template = create_template(
             workload,
             &self.config.key_prefix,
             self.config.data_size,
             self.config.search_config.as_ref(),
+            cluster_mode,
         );
 
         // Build command buffer for pipeline
@@ -599,12 +601,14 @@ impl Orchestrator {
             self.config.requests
         };
 
-        // Create command template
+        // Create command template (use cluster mode if we have cluster topology)
+        let cluster_mode = self.cluster_topology.is_some();
         let template = create_template(
             workload,
             &self.config.key_prefix,
             self.config.data_size,
             self.config.search_config.as_ref(),
+            cluster_mode,
         );
 
         // Build command buffer for pipeline
@@ -625,8 +629,26 @@ impl Orchestrator {
             ));
         }
 
-        // Calculate clients per thread
+        // Calculate clients per thread per node
+        // For slot-aware routing, we need at least 1 client per node per thread
         let clients_per_thread = self.config.clients_per_thread() as usize;
+        if clients_per_thread == 0 {
+            return Err(crate::utils::BenchmarkError::Config(
+                format!(
+                    "Not enough clients ({}) for threads ({}). Need at least 1 client per thread.",
+                    self.config.clients, self.config.threads
+                ),
+            ));
+        }
+
+        // In cluster mode, total clients = clients_per_thread * num_nodes * threads
+        let total_clients = clients_per_thread * addresses.len() * self.config.threads as usize;
+        if self.cluster_topology.is_some() && total_clients != self.config.clients as usize {
+            eprintln!(
+                "Note: Using {} total clients ({} per thread × {} nodes × {} threads)",
+                total_clients, clients_per_thread, addresses.len(), self.config.threads
+            );
+        }
 
         // Spawn event-driven worker threads
         let mut handles: Vec<thread::JoinHandle<EventWorkerResult>> =
@@ -812,12 +834,15 @@ impl Orchestrator {
 
     /// Wait for index background indexing to complete
     pub fn wait_for_search_indexing(&self, timeout_secs: u64) -> Result<()> {
+        use crate::metrics::backfill::wait_for_backfill;
+
         let search_config = self.config.search_config.as_ref().ok_or_else(|| {
             crate::utils::BenchmarkError::Config(
                 "Search config required for index operations".to_string(),
             )
         })?;
 
+        // Detect engine type from first connection
         let addresses = self.get_benchmark_addresses();
         if addresses.is_empty() {
             return Err(crate::utils::BenchmarkError::Config(
@@ -827,17 +852,45 @@ impl Orchestrator {
 
         let (host, port) = &addresses[0];
         let mut conn = self.connection_factory.create(host, *port)?;
+        let engine_type = detect_engine_type(&mut conn);
 
-        info!(
-            "Waiting for index '{}' to complete indexing (timeout: {}s)",
-            search_config.index_name, timeout_secs
-        );
+        // Use cluster-aware backfill wait if we have cluster topology
+        if let Some(ref topology) = self.cluster_topology {
+            let config = BackfillWaitConfig {
+                max_wait: Some(Duration::from_secs(timeout_secs)),
+                ..Default::default()
+            };
 
-        wait_for_indexing(&mut conn, &search_config.index_name, timeout_secs).map_err(|e| {
-            crate::utils::BenchmarkError::Config(format!("Indexing wait failed: {}", e))
-        })?;
+            let index_names = [search_config.index_name.as_str()];
+            let conn_factory = &self.connection_factory;
 
-        info!("Index '{}' is fully indexed", search_config.index_name);
+            wait_for_backfill(
+                engine_type,
+                &index_names,
+                &topology.nodes,
+                |node| {
+                    conn_factory.create(&node.host, node.port).ok()
+                },
+                &config,
+            )
+            .map_err(|e| {
+                crate::utils::BenchmarkError::Config(format!("Backfill wait failed: {}", e))
+            })?;
+        } else {
+            // Single-node mode: use simple wait
+            info!(
+                "Waiting for index '{}' to complete indexing (timeout: {}s)",
+                search_config.index_name, timeout_secs
+            );
+
+            crate::workload::wait_for_indexing(&mut conn, &search_config.index_name, timeout_secs)
+                .map_err(|e| {
+                    crate::utils::BenchmarkError::Config(format!("Indexing wait failed: {}", e))
+                })?;
+
+            info!("Index '{}' is fully indexed", search_config.index_name);
+        }
+
         Ok(())
     }
 
@@ -939,6 +992,22 @@ impl Orchestrator {
         }
 
         Ok(())
+    }
+}
+
+/// Detect engine type from INFO SEARCH response
+fn detect_engine_type(conn: &mut crate::client::RawConnection) -> EngineType {
+    use crate::utils::{RespEncoder, RespValue};
+
+    let mut encoder = RespEncoder::with_capacity(64);
+    encoder.encode_command_str(&["INFO", "SEARCH"]);
+
+    match conn.execute(&encoder) {
+        Ok(RespValue::BulkString(data)) => {
+            let info_str = String::from_utf8_lossy(&data);
+            EngineType::detect(&info_str)
+        }
+        _ => EngineType::Unknown,
     }
 }
 

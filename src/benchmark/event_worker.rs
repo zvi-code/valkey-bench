@@ -387,6 +387,14 @@ pub struct EventWorker {
     tag_map: Option<Arc<ClusterTagMap>>,
     /// Workload type (for vec-load skip logic)
     workload_type: WorkloadType,
+    /// Slot to node address mapping (built from topology)
+    slot_to_node: Option<Box<[(String, u16); 16384]>>,
+    /// Key prefix for regular keys (for slot calculation)
+    regular_key_prefix: String,
+    /// Ready queues per node - clients ready to accept new requests (O(1) pop/push)
+    node_ready_queues: std::collections::HashMap<(String, u16), VecDeque<usize>>,
+    /// Global ready queue for standalone mode or non-slot-aware workloads
+    global_ready_queue: VecDeque<usize>,
 }
 
 impl EventWorker {
@@ -414,6 +422,24 @@ impl EventWorker {
         let poll = Poll::new()?;
         let mut clients = Vec::new();
         let mut token_counter = 0usize;
+        let mut node_ready_queues: std::collections::HashMap<(String, u16), VecDeque<usize>> =
+            std::collections::HashMap::new();
+
+        // Build slot_to_node mapping from topology
+        let slot_to_node: Option<Box<[(String, u16); 16384]>> = if let Some(topo) = topology {
+            // Create array with default empty values
+            let mut mapping: Box<[(String, u16); 16384]> =
+                vec![(String::new(), 0u16); 16384].into_boxed_slice().try_into().unwrap();
+            
+            for node in topo.primaries() {
+                for &slot in &node.slots {
+                    mapping[slot as usize] = (node.host.clone(), node.port);
+                }
+            }
+            Some(mapping)
+        } else {
+            None
+        };
 
         // Build a map of (host, port) -> slots for cluster mode
         let slot_map: std::collections::HashMap<(String, u16), Vec<u16>> = if let Some(topo) = topology {
@@ -437,6 +463,7 @@ impl EventWorker {
 
                 let mut mio_stream = MioTcpStream::from_std(std_stream);
                 let token = Token(token_counter);
+                let client_idx = token_counter;
                 token_counter += 1;
 
                 // Register with poll - initially interested in WRITABLE
@@ -459,6 +486,12 @@ impl EventWorker {
                 }
 
                 clients.push(client);
+
+                // Track which clients belong to which node (add to ready queue)
+                node_ready_queues
+                    .entry((host.clone(), *port))
+                    .or_insert_with(VecDeque::new)
+                    .push_back(client_idx);
             }
         }
 
@@ -481,6 +514,9 @@ impl EventWorker {
             (false, String::new(), 0)
         };
 
+        // Build global ready queue with all client indices
+        let global_ready_queue: VecDeque<usize> = (0..clients.len()).collect();
+
         Ok(Self {
             id,
             poll,
@@ -500,7 +536,243 @@ impl EventWorker {
             requests_processed: 0,
             tag_map,
             workload_type,
+            slot_to_node,
+            regular_key_prefix: config.key_prefix.clone(),
+            node_ready_queues,
+            global_ready_queue,
         })
+    }
+
+    /// Calculate slot for a key (using CRC16)
+    fn slot_for_key(&self, key: &[u8]) -> u16 {
+        // Check for hash tag {xxx}
+        if let Some(start) = key.iter().position(|&b| b == b'{') {
+            if let Some(end) = key[start + 1..].iter().position(|&b| b == b'}') {
+                if end > 0 {
+                    // Hash only the content inside {}
+                    return crc16(&key[start + 1..start + 1 + end]) % 16384;
+                }
+            }
+        }
+        // Hash the entire key
+        crc16(key) % 16384
+    }
+
+    /// Build a key and return its bytes for slot calculation
+    fn build_key_bytes(&self, key_num: u64) -> Vec<u8> {
+        let mut key_bytes = Vec::with_capacity(self.regular_key_prefix.len() + 12);
+        key_bytes.extend_from_slice(self.regular_key_prefix.as_bytes());
+        // Format as zero-padded 12-digit number
+        write!(std::io::Write::by_ref(&mut key_bytes), "{:012}", key_num).ok();
+        key_bytes
+    }
+
+    /// Pop a ready client for a given slot (cluster mode) - O(1)
+    /// Returns client index or None if no ready client for this slot's node
+    fn pop_ready_client_for_slot(&mut self, slot: u16) -> Option<usize> {
+        if let Some(ref slot_to_node) = self.slot_to_node {
+            // Cluster mode: get client from the node owning this slot
+            let node_addr = slot_to_node[slot as usize].clone();
+            if node_addr.0.is_empty() {
+                // Slot not mapped, try any node
+                return self.pop_any_ready_client();
+            }
+            
+            // Pop from node's ready queue
+            if let Some(queue) = self.node_ready_queues.get_mut(&node_addr) {
+                queue.pop_front()
+            } else {
+                None
+            }
+        } else {
+            // Standalone mode: pop from global queue
+            self.global_ready_queue.pop_front()
+        }
+    }
+
+    /// Pop any ready client - tries all node queues in cluster mode, global queue in standalone
+    fn pop_any_ready_client(&mut self) -> Option<usize> {
+        if self.slot_to_node.is_some() {
+            // Cluster mode: try all node queues
+            for queue in self.node_ready_queues.values_mut() {
+                if let Some(idx) = queue.pop_front() {
+                    return Some(idx);
+                }
+            }
+            None
+        } else {
+            // Standalone mode: use global queue
+            self.global_ready_queue.pop_front()
+        }
+    }
+
+    /// Return a client to the ready queue after completing a request
+    fn return_client_to_ready(&mut self, client_idx: usize) {
+        if self.slot_to_node.is_some() {
+            // Cluster mode: add to node-specific queue only
+            if let Some(ref owned) = self.clients[client_idx].owned_slots {
+                // Find first slot owned by this client to determine node
+                for slot in 0..16384u16 {
+                    if owned[slot as usize] {
+                        if let Some(ref slot_to_node) = self.slot_to_node {
+                            let node_addr = slot_to_node[slot as usize].clone();
+                            if !node_addr.0.is_empty() {
+                                if let Some(queue) = self.node_ready_queues.get_mut(&node_addr) {
+                                    queue.push_back(client_idx);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Standalone mode: add to global queue
+            self.global_ready_queue.push_back(client_idx);
+        }
+    }
+
+    /// Check if workload needs slot-aware routing
+    /// 
+    /// With cluster-tagged keys (e.g., `key:{ABC}:000000000001`), all key-value
+    /// workloads route correctly via the ClusterTag placeholder, so we don't 
+    /// need special slot-aware routing. This returns false for all workloads
+    /// since cluster mode now uses cluster tags in keys.
+    fn needs_slot_routing(&self) -> bool {
+        // All workloads now use cluster tags when in cluster mode,
+        // so we don't need special slot-aware routing
+        false
+    }
+
+    /// Generate next key number (sequential or random)
+    fn next_key_num(&mut self, counters: &GlobalCounters) -> u64 {
+        if self.sequential {
+            counters.next_seq_key(self.keyspace_len)
+        } else {
+            self.rng.u64(0..self.keyspace_len)
+        }
+    }
+
+    /// Try to start a request with slot-aware routing
+    /// Returns true if a request was started, false if no idle client available
+    fn try_start_slot_aware_request(
+        &mut self,
+        counters: &GlobalCounters,
+        dataset: Option<&DatasetContext>,
+    ) -> bool {
+        // First try to get any ready client
+        // Try the slot-specific path first (most likely to succeed)
+        // Generate a "peek" key number - we'll commit to it only if we find a client
+        
+        // OPTIMIZATION: Check if any node queues have clients before generating key
+        let has_ready_clients = self.node_ready_queues.values().any(|q| !q.is_empty());
+        if !has_ready_clients {
+            return false;
+        }
+        
+        // Generate key number - only now that we know we have clients
+        let key_num = self.next_key_num(counters);
+        
+        // Build key and calculate slot
+        let key_bytes = self.build_key_bytes(key_num);
+        let slot = self.slot_for_key(&key_bytes);
+        
+        // Try to get client for this slot's node first
+        if let Some(client_idx) = self.pop_ready_client_for_slot(slot) {
+            self.fill_placeholders_with_key(client_idx, key_num, counters, dataset);
+            self.clients[client_idx].start_request();
+            let _ = self.clients[client_idx].try_write();
+            return true;
+        }
+        
+        // No client for this specific slot's node, try any available client
+        // This may cause a MOVED redirect, but it's better than losing work
+        if let Some(client_idx) = self.pop_any_ready_client() {
+            self.fill_placeholders_with_key(client_idx, key_num, counters, dataset);
+            self.clients[client_idx].start_request();
+            let _ = self.clients[client_idx].try_write();
+            return true;
+        }
+        
+        // This shouldn't happen if has_ready_clients was true, but handle it
+        // The key_num is lost in this case, but it's a race condition edge case
+        false
+    }
+
+    /// Fill placeholders with a pre-determined key (for slot-aware routing)
+    fn fill_placeholders_with_key(
+        &mut self,
+        client_idx: usize,
+        key_num: u64,
+        counters: &GlobalCounters,
+        dataset: Option<&DatasetContext>,
+    ) {
+        for (cmd_idx, phs) in self.command_template.placeholders.iter().enumerate() {
+            for ph in phs {
+                let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
+                match ph.placeholder_type {
+                    PlaceholderType::Key => {
+                        if dataset.is_some() {
+                            continue; // Set with Vector
+                        }
+                        // Use the pre-determined key
+                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
+                    }
+                    PlaceholderType::Vector => {
+                        if let Some(ds) = dataset {
+                            let idx = if matches!(self.workload_type, WorkloadType::VecLoad) {
+                                if let Some(ref tm) = self.tag_map {
+                                    match tm.claim_unmapped_id(ds.num_vectors()) {
+                                        Some(id) => id,
+                                        None => return,
+                                    }
+                                } else {
+                                    counters.next_dataset_idx() % ds.num_vectors()
+                                }
+                            } else {
+                                counters.next_dataset_idx() % ds.num_vectors()
+                            };
+                            let vec_bytes = ds.get_vector_bytes(idx);
+                            self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
+                                .copy_from_slice(vec_bytes);
+                            for ph2 in phs {
+                                if matches!(ph2.placeholder_type, PlaceholderType::Key) {
+                                    let key_offset = self.command_template.absolute_offset(cmd_idx, ph2.offset);
+                                    write_fixed_width_u64(&mut self.clients[client_idx].write_buf, key_offset, idx, ph2.len);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    PlaceholderType::QueryVector => {
+                        if let Some(ds) = dataset {
+                            let idx = self.rng.u64(0..ds.num_queries());
+                            let vec_bytes = ds.get_query_bytes(idx);
+                            self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
+                                .copy_from_slice(vec_bytes);
+                            self.clients[client_idx].query_indices.push_back(idx);
+                        }
+                    }
+                    PlaceholderType::RandInt => {
+                        let value = self.rng.u64(..);
+                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, value, ph.len);
+                    }
+                    PlaceholderType::ClusterTag => {
+                        let tag = loop {
+                            let c1 = b'A' + (self.rng.u8(..) % 26);
+                            let c2 = b'A' + (self.rng.u8(..) % 26);
+                            let c3 = b'A' + (self.rng.u8(..) % 26);
+                            let candidate = [b'{', c1, c2, c3, b'}'];
+                            let slot = slot_for_tag(&candidate);
+                            if self.clients[client_idx].owns_slot(slot) {
+                                break candidate;
+                            }
+                        };
+                        self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
+                    }
+                }
+            }
+        }
     }
 
     /// Run the event loop
@@ -510,13 +782,26 @@ impl EventWorker {
         dataset: Option<Arc<DatasetContext>>,
     ) -> EventWorkerResult {
         let batch_size = self.pipeline as u64;
+        let slot_aware = self.needs_slot_routing();
 
-        // Start all clients
-        for client_idx in 0..self.clients.len() {
-            if counters
-                .claim_batch(batch_size)
-                .is_some()
-            {
+        // Start initial batch: drain ready queues
+        if slot_aware {
+            // For slot-aware: try to start as many requests as possible
+            while counters.claim_batch(batch_size).is_some() {
+                if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
+                    // No ready client available, undo the claim
+                    // (counters don't support undo, so we'll just break)
+                    break;
+                }
+            }
+        } else {
+            // For non-slot-aware: pop from global ready queue
+            while let Some(client_idx) = self.pop_any_ready_client() {
+                if counters.claim_batch(batch_size).is_none() {
+                    // No more work, return client to queue
+                    self.return_client_to_ready(client_idx);
+                    break;
+                }
                 self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
                 self.clients[client_idx].start_request();
             }
@@ -559,7 +844,7 @@ impl EventWorker {
 
                 match state {
                     ClientState::Idle => {
-                        // Nothing to do for idle - handled separately below
+                        // Idle clients are in the ready queue, nothing to do here
                     }
                     ClientState::Writing => {
                         // Try to write (optimistically)
@@ -573,6 +858,7 @@ impl EventWorker {
                             Err(_e) => {
                                 self.error_count += batch_size;
                                 self.clients[client_idx].state = ClientState::Idle;
+                                self.return_client_to_ready(client_idx);
                             }
                         }
                     }
@@ -611,21 +897,28 @@ impl EventWorker {
                                     }
                                 }
 
-                                // Start next request immediately
-                                if counters
-                                    .claim_batch(batch_size)
-                                    .is_some()
-                                {
-                                    self.fill_placeholders_for(
-                                        client_idx,
-                                        &counters,
-                                        dataset.as_deref(),
-                                    );
-                                    self.clients[client_idx].start_request();
-                                    // Immediately try to write (socket likely writable)
-                                    let _ = self.clients[client_idx].try_write();
-                                } else {
+                                // Start next request immediately on this client
+                                // For non-slot-aware: reuse same client
+                                // For slot-aware: return to queue (new request may need different node)
+                                if slot_aware {
+                                    // Return to ready queue, will be picked up for correct slot
                                     self.clients[client_idx].state = ClientState::Idle;
+                                    self.return_client_to_ready(client_idx);
+                                } else {
+                                    // Non-slot-aware: reuse client directly
+                                    if counters.claim_batch(batch_size).is_some() {
+                                        self.fill_placeholders_for(
+                                            client_idx,
+                                            &counters,
+                                            dataset.as_deref(),
+                                        );
+                                        self.clients[client_idx].start_request();
+                                        // Immediately try to write (socket likely writable)
+                                        let _ = self.clients[client_idx].try_write();
+                                    } else {
+                                        self.clients[client_idx].state = ClientState::Idle;
+                                        self.return_client_to_ready(client_idx);
+                                    }
                                 }
                             }
                             Ok(false) => {
@@ -634,27 +927,39 @@ impl EventWorker {
                             Err(_e) => {
                                 self.error_count += batch_size;
                                 self.clients[client_idx].state = ClientState::Idle;
+                                self.return_client_to_ready(client_idx);
                             }
                         }
                     }
                 }
             }
 
-            // Start idle clients
-            for client_idx in 0..self.clients.len() {
-                if self.clients[client_idx].state == ClientState::Idle {
+            // Start new requests from ready queue
+            if slot_aware {
+                // Slot-aware: try to start requests with proper routing
+                while counters.claim_batch(batch_size).is_some() {
                     if counters.is_duration_exceeded() {
                         break;
                     }
-                    if counters
-                        .claim_batch(batch_size)
-                        .is_some()
-                    {
-                        self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
-                        self.clients[client_idx].start_request();
-                        // Immediately try to write
-                        let _ = self.clients[client_idx].try_write();
+                    if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
+                        // No ready client, break (work still claimed, will be retried)
+                        break;
                     }
+                }
+            } else {
+                // Non-slot-aware: pop from global ready queue
+                while let Some(client_idx) = self.pop_any_ready_client() {
+                    if counters.is_duration_exceeded() {
+                        self.return_client_to_ready(client_idx);
+                        break;
+                    }
+                    if counters.claim_batch(batch_size).is_none() {
+                        self.return_client_to_ready(client_idx);
+                        break;
+                    }
+                    self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
+                    self.clients[client_idx].start_request();
+                    let _ = self.clients[client_idx].try_write();
                 }
             }
         }

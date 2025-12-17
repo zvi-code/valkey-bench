@@ -77,7 +77,7 @@ pub struct CliArgs {
     pub requests: u64,
 
     /// Database number to SELECT
-    #[arg(short = 'd', long = "dbnum")]
+    #[arg(long = "dbnum")]
     pub dbnum: Option<u32>,
 
     /// Pipeline depth (commands per batch)
@@ -86,7 +86,7 @@ pub struct CliArgs {
 
     // ===== Key Generation =====
     /// Size of key/value data in bytes
-    #[arg(short = 'D', long = "data-size", default_value_t = 3)]
+    #[arg(short = 'd', long = "data-size", default_value_t = 3)]
     pub data_size: usize,
 
     /// Use random keys within keyspace range
