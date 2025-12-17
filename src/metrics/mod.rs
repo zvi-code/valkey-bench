@@ -23,7 +23,8 @@ pub use backfill::{
 };
 pub use collector::MetricsCollector;
 pub use ft_info::{
-    convert_ftinfo_to_lines, convert_memdb_ftinfo_to_lines, EngineType, FtInfoResult, IndexStatus,
+    convert_ftinfo_to_lines, convert_memdb_ftinfo_to_lines, parse_ftinfo_lines,
+    EngineType, FtInfoResult, IndexStatus,
 };
 pub use info_fields::{
     default_ftinfo_fields, default_info_fields, default_search_info_fields, AggregationType,
@@ -32,6 +33,6 @@ pub use info_fields::{
 pub use node_metrics::NodeMetrics;
 pub use reporter::MetricsReporter;
 pub use snapshot::{
-    compare_snapshots, print_snapshot_diff, ClusterSnapshot, FieldDiff, SnapshotBuilder,
-    SnapshotDiff,
+    compare_snapshots, print_per_node_diff, print_per_node_diff_all, print_snapshot_diff,
+    ClusterSnapshot, FieldDiff, SnapshotBuilder, SnapshotDiff,
 };

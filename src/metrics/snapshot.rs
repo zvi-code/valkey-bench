@@ -238,6 +238,18 @@ pub struct FieldDiff {
     pub display_format: DisplayFormat,
     /// Diff type used
     pub diff_type: DiffType,
+    /// Per-node deltas: (node_id, old_value, new_value, delta)
+    pub per_node_deltas: Option<Vec<(String, i64, i64, i64)>>,
+}
+
+/// Per-node delta for a specific field
+#[derive(Debug, Clone)]
+pub struct NodeDelta {
+    pub node_id: String,
+    pub old_value: i64,
+    pub new_value: i64,
+    pub delta: i64,
+    pub rate: Option<f64>,
 }
 
 impl FieldDiff {
@@ -304,6 +316,29 @@ pub fn compare_snapshots(
                 None
             };
 
+            // Compute per-node deltas if both snapshots have per-node values
+            let per_node_deltas = if field.track_per_node {
+                match (&old_f.per_node_values, &new_f.per_node_values) {
+                    (Some(old_nodes), Some(new_nodes)) => {
+                        let mut deltas = Vec::new();
+                        // Build map of old values
+                        let old_map: std::collections::HashMap<&str, i64> = old_nodes
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), *v))
+                            .collect();
+
+                        for (node_id, new_val) in new_nodes {
+                            let old_val = *old_map.get(node_id.as_str()).unwrap_or(&0);
+                            deltas.push((node_id.clone(), old_val, *new_val, *new_val - old_val));
+                        }
+                        Some(deltas)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
             field_diffs.push(FieldDiff {
                 field_name: field_key,
                 old_value,
@@ -312,6 +347,7 @@ pub fn compare_snapshots(
                 rate,
                 display_format: field.display_format,
                 diff_type: field.diff_type,
+                per_node_deltas,
             });
         }
     }
@@ -373,6 +409,153 @@ pub fn print_snapshot_diff(diff: &SnapshotDiff, fields: &[InfoFieldType]) {
         );
     }
 
+    println!();
+}
+
+/// Print per-node diff table for selected fields
+///
+/// Shows how load/metrics are distributed across nodes in a cluster.
+/// Useful for identifying:
+/// - Uneven load distribution
+/// - Node-specific issues
+/// - Client distribution problems
+pub fn print_per_node_diff(diff: &SnapshotDiff, field_names: &[&str], elapsed_secs: f64) {
+    // Collect fields that have per-node data
+    let fields_with_nodes: Vec<&FieldDiff> = diff
+        .fields
+        .iter()
+        .filter(|f| {
+            field_names.iter().any(|n| f.field_name.contains(n))
+                && f.per_node_deltas.is_some()
+                && f.per_node_deltas.as_ref().map(|d| !d.is_empty()).unwrap_or(false)
+        })
+        .collect();
+
+    if fields_with_nodes.is_empty() {
+        println!("\n(No per-node data available for selected fields)");
+        return;
+    }
+
+    println!("\n=== Per-Node Distribution ({:.2}s) ===\n", elapsed_secs);
+
+    for field in fields_with_nodes {
+        if let Some(ref node_deltas) = field.per_node_deltas {
+            println!("{}:", field.field_name);
+            println!(
+                "  {:40} {:>12} {:>12} {:>12} {:>12}",
+                "Node", "Before", "After", "Delta", "Rate/s"
+            );
+            println!("  {}", "-".repeat(88));
+
+            let total_delta: i64 = node_deltas.iter().map(|(_, _, _, d)| d).sum();
+
+            for (node_id, old_val, new_val, delta) in node_deltas {
+                let rate = if elapsed_secs > 0.0 {
+                    *delta as f64 / elapsed_secs
+                } else {
+                    0.0
+                };
+                let pct = if total_delta > 0 {
+                    (*delta as f64 / total_delta as f64) * 100.0
+                } else {
+                    0.0
+                };
+                println!(
+                    "  {:40} {:>12} {:>12} {:>+12} {:>11.1} ({:>5.1}%)",
+                    node_id, old_val, new_val, delta, rate, pct
+                );
+            }
+
+            // Print total row
+            let total_old: i64 = node_deltas.iter().map(|(_, o, _, _)| o).sum();
+            let total_new: i64 = node_deltas.iter().map(|(_, _, n, _)| n).sum();
+            let total_rate = if elapsed_secs > 0.0 {
+                total_delta as f64 / elapsed_secs
+            } else {
+                0.0
+            };
+            println!("  {}", "-".repeat(88));
+            println!(
+                "  {:40} {:>12} {:>12} {:>+12} {:>11.1}",
+                "TOTAL", total_old, total_new, total_delta, total_rate
+            );
+            println!();
+        }
+    }
+}
+
+/// Print per-node diff table for all tracked fields with significant deltas
+pub fn print_per_node_diff_all(diff: &SnapshotDiff) {
+    let elapsed_secs = diff.elapsed_secs;
+
+    // Collect fields that have per-node data with non-zero deltas
+    let fields_with_nodes: Vec<&FieldDiff> = diff
+        .fields
+        .iter()
+        .filter(|f| {
+            if let Some(ref deltas) = f.per_node_deltas {
+                deltas.iter().any(|(_, _, _, d)| *d != 0)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    if fields_with_nodes.is_empty() {
+        return;
+    }
+
+    println!("\n=== Per-Node Distribution ({:.2}s) ===", elapsed_secs);
+
+    for field in fields_with_nodes {
+        if let Some(ref node_deltas) = field.per_node_deltas {
+            // Skip if all deltas are zero
+            if node_deltas.iter().all(|(_, _, _, d)| *d == 0) {
+                continue;
+            }
+
+            println!("\n{}:", field.field_name);
+            println!(
+                "  {:40} {:>12} {:>12} {:>12}",
+                "Node", "Delta", "Rate/s", "Share"
+            );
+            println!("  {}", "-".repeat(78));
+
+            let total_delta: i64 = node_deltas.iter().map(|(_, _, _, d)| *d).sum();
+
+            for (node_id, _old_val, _new_val, delta) in node_deltas {
+                if *delta == 0 {
+                    continue;
+                }
+                let rate = if elapsed_secs > 0.0 {
+                    *delta as f64 / elapsed_secs
+                } else {
+                    0.0
+                };
+                let pct = if total_delta != 0 {
+                    (*delta as f64 / total_delta as f64) * 100.0
+                } else {
+                    0.0
+                };
+                println!(
+                    "  {:40} {:>+12} {:>12.1} {:>11.1}%",
+                    node_id, delta, rate, pct
+                );
+            }
+
+            // Print total row
+            let total_rate = if elapsed_secs > 0.0 {
+                total_delta as f64 / elapsed_secs
+            } else {
+                0.0
+            };
+            println!("  {}", "-".repeat(78));
+            println!(
+                "  {:40} {:>+12} {:>12.1}",
+                "TOTAL", total_delta, total_rate
+            );
+        }
+    }
     println!();
 }
 

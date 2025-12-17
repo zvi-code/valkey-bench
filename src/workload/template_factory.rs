@@ -3,10 +3,8 @@
 use crate::config::SearchConfig;
 
 use super::command_template::CommandTemplate;
+use super::key_format::DEFAULT_KEY_WIDTH;
 use super::workload_type::WorkloadType;
-
-/// Default key width for numeric keys
-pub const DEFAULT_KEY_WIDTH: usize = 12;
 
 /// Create command template for given workload type
 pub fn create_template(
@@ -103,9 +101,10 @@ pub fn create_template(
 
         WorkloadType::VecDelete => {
             let sc = search_config.expect("VecDelete requires search config");
+            // Use cluster tag format for consistency with VecLoad
             CommandTemplate::new("DEL")
                 .arg_str("DEL")
-                .arg_prefixed_key(&sc.prefix, key_width)
+                .arg_prefixed_key_with_cluster_tag(&sc.prefix, key_width)
         }
 
         WorkloadType::VecUpdate => {
@@ -148,15 +147,18 @@ fn create_mset_template(
 }
 
 /// Create HSET template for vector loading
+/// Key format: prefix{tag}:vector_id (e.g., "zvec_:{ABC}:000000055083")
 fn create_vec_load_template(
     prefix: &str,
     key_width: usize,
     vector_field: &str,
     vec_byte_len: usize,
 ) -> CommandTemplate {
+    // Key format: prefix + cluster_tag + ":" + vector_id
+    // We use a compound key with cluster tag for proper shard distribution
     CommandTemplate::new("HSET")
         .arg_str("HSET")
-        .arg_prefixed_key(prefix, key_width)
+        .arg_prefixed_key_with_cluster_tag(prefix, key_width)
         .arg_str(vector_field)
         .arg_vector(vec_byte_len)
 }
@@ -187,7 +189,9 @@ fn create_vec_query_template(search_config: &SearchConfig) -> CommandTemplate {
         .arg_str("PARAMS")
         .arg_str("2") // 2 parameters
         .arg_str("BLOB")
-        .arg_query_vector(search_config.vec_byte_len()); // Use query vector for FT.SEARCH
+        .arg_query_vector(search_config.vec_byte_len()) // Use query vector for FT.SEARCH
+        .arg_str("DIALECT")
+        .arg_str("2"); // DIALECT 2 required for KNN queries
 
     if search_config.nocontent {
         template = template.arg_str("NOCONTENT");
@@ -241,7 +245,9 @@ mod tests {
         let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config));
         let buf = template.build(1);
 
-        // Should have key and vector placeholders
-        assert_eq!(buf.placeholders[0].len(), 2);
+        // Should have cluster_tag, key, and vector placeholders
+        // VecLoad uses arg_prefixed_key_with_cluster_tag which creates 2 placeholders (tag + key)
+        // Plus 1 for the vector = 3 total
+        assert_eq!(buf.placeholders[0].len(), 3);
     }
 }

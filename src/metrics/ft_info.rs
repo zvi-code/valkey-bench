@@ -286,9 +286,10 @@ pub enum IndexStatus {
 
 impl IndexStatus {
     pub fn from_str(s: &str) -> Self {
-        match s.to_uppercase().as_str() {
-            "AVAILABLE" => IndexStatus::Available,
-            "BACKFILLING" => IndexStatus::Backfilling,
+        let upper = s.to_uppercase();
+        match upper.as_str() {
+            "AVAILABLE" | "READY" => IndexStatus::Available,
+            "BACKFILLING" | "BACKFILL_IN_PROGRESS" => IndexStatus::Backfilling,
             s if s.contains("QUEUED") => IndexStatus::Queued,
             _ => IndexStatus::Unknown(s.to_string()),
         }

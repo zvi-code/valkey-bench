@@ -20,10 +20,34 @@ use mio::{Events, Interest, Poll, Token};
 use super::counters::GlobalCounters;
 use super::worker::RecallStats;
 use crate::client::{CommandBuffer, PlaceholderOffset, PlaceholderType};
+use crate::cluster::ClusterTopology;
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
 use crate::utils::{RespDecoder, RespValue};
+use crate::workload::{extract_numeric_ids, parse_search_response};
 use std::sync::Arc;
+
+/// CRC16 implementation for Redis cluster slot calculation (XMODEM)
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// Calculate slot for a cluster tag like {ABC}
+fn slot_for_tag(tag: &[u8; 5]) -> u16 {
+    // The content inside {} is: tag[1], tag[2], tag[3]
+    crc16(&tag[1..4]) % 16384
+}
 
 /// Client state in the event loop
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +88,9 @@ struct EventClient {
     inflight_indices: VecDeque<u64>,
     /// Query indices for recall
     query_indices: VecDeque<u64>,
+    /// Slots owned by this client's node (for cluster tag routing)
+    /// Index is slot number (0-16383), value is true if owned
+    owned_slots: Option<Box<[bool; 16384]>>,
 }
 
 impl EventClient {
@@ -82,6 +109,26 @@ impl EventClient {
             pipeline,
             inflight_indices: VecDeque::with_capacity(pipeline),
             query_indices: VecDeque::with_capacity(pipeline),
+            owned_slots: None,
+        }
+    }
+
+    /// Set the slots owned by this client's node
+    fn set_owned_slots(&mut self, slots: &[u16]) {
+        let mut bitmap = Box::new([false; 16384]);
+        for &slot in slots {
+            if (slot as usize) < 16384 {
+                bitmap[slot as usize] = true;
+            }
+        }
+        self.owned_slots = Some(bitmap);
+    }
+
+    /// Check if a slot is owned by this client's node
+    fn owns_slot(&self, slot: u16) -> bool {
+        match &self.owned_slots {
+            Some(bitmap) => bitmap.get(slot as usize).copied().unwrap_or(false),
+            None => true, // Non-cluster mode: accept all
         }
     }
 
@@ -91,6 +138,8 @@ impl EventClient {
         self.read_pos = 0;
         self.pending_responses = self.pipeline;
         self.responses.clear();
+        // Note: DON'T clear query_indices here - they're filled BEFORE start_request()
+        // and consumed AFTER responses are received
         self.start_time = Some(Instant::now());
         self.state = ClientState::Writing;
     }
@@ -338,19 +387,40 @@ pub struct EventWorker {
 
 impl EventWorker {
     /// Create new event-driven worker
+    ///
+    /// # Arguments
+    /// * `id` - Worker ID
+    /// * `addresses` - List of (host, port) to connect to
+    /// * `clients_per_addr` - Number of clients per address
+    /// * `config` - Benchmark configuration
+    /// * `command_template` - Pre-built command template
+    /// * `topology` - Optional cluster topology for slot-aware routing
     pub fn new(
         id: usize,
         addresses: Vec<(String, u16)>,
         clients_per_addr: usize,
         config: &BenchmarkConfig,
         command_template: CommandBuffer,
+        topology: Option<&ClusterTopology>,
     ) -> io::Result<Self> {
         let poll = Poll::new()?;
         let mut clients = Vec::new();
         let mut token_counter = 0usize;
 
+        // Build a map of (host, port) -> slots for cluster mode
+        let slot_map: std::collections::HashMap<(String, u16), Vec<u16>> = if let Some(topo) = topology {
+            topo.primaries()
+                .map(|n| ((n.host.clone(), n.port), n.slots.clone()))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
         // Create clients distributed across addresses
-        for (addr_idx, (host, port)) in addresses.iter().enumerate() {
+        for (_addr_idx, (host, port)) in addresses.iter().enumerate() {
+            // Get slots for this node (if cluster mode)
+            let node_slots = slot_map.get(&(host.clone(), *port));
+
             for _ in 0..clients_per_addr {
                 let addr = format!("{}:{}", host, port);
                 let std_stream = std::net::TcpStream::connect(&addr)?;
@@ -368,12 +438,18 @@ impl EventWorker {
                     Interest::READABLE | Interest::WRITABLE,
                 )?;
 
-                let client = EventClient::new(
+                let mut client = EventClient::new(
                     mio_stream,
                     token,
                     command_template.bytes.clone(),
                     config.pipeline as usize,
                 );
+
+                // Set slot ownership for cluster mode
+                if let Some(slots) = node_slots {
+                    client.set_owned_slots(slots);
+                }
+
                 clients.push(client);
             }
         }
@@ -503,6 +579,28 @@ impl EventWorker {
                                     self.clients[client_idx].responses.len() as u64,
                                 );
 
+                                // Compute recall for vector queries
+                                if self.compute_recall {
+                                    if let Some(ref ds) = dataset {
+                                        // Collect query indices first to avoid borrow conflict
+                                        let query_indices: Vec<u64> = self.clients[client_idx]
+                                            .query_indices
+                                            .drain(..)
+                                            .collect();
+
+                                        for (response, query_idx) in self.clients[client_idx]
+                                            .responses
+                                            .iter()
+                                            .zip(query_indices.iter())
+                                        {
+                                            let doc_ids = parse_search_response(response);
+                                            let result_ids = extract_numeric_ids(&doc_ids, &self.key_prefix);
+                                            let recall = ds.compute_recall(*query_idx, &result_ids, self.k);
+                                            self.recall_stats.record(recall);
+                                        }
+                                    }
+                                }
+
                                 // Start next request immediately
                                 if counters
                                     .claim_batch(batch_size)
@@ -613,6 +711,8 @@ impl EventWorker {
                             let vec_bytes = ds.get_query_bytes(idx);
                             self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
                                 .copy_from_slice(vec_bytes);
+                            // Store query index for recall computation
+                            self.clients[client_idx].query_indices.push_back(idx);
                         }
                     }
                     PlaceholderType::RandInt => {
@@ -620,8 +720,20 @@ impl EventWorker {
                         write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, value, ph.len);
                     }
                     PlaceholderType::ClusterTag => {
-                        // Static tag for now
-                        self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(b"{000}");
+                        // Generate random 3-char tag like {ABC} that routes to our node
+                        // Keep generating until we find a tag whose slot is owned by this client
+                        let tag = loop {
+                            let c1 = b'A' + (self.rng.u8(..) % 26);
+                            let c2 = b'A' + (self.rng.u8(..) % 26);
+                            let c3 = b'A' + (self.rng.u8(..) % 26);
+                            let candidate = [b'{', c1, c2, c3, b'}'];
+                            let slot = slot_for_tag(&candidate);
+                            if self.clients[client_idx].owns_slot(slot) {
+                                break candidate;
+                            }
+                            // In non-cluster mode, owns_slot always returns true
+                        };
+                        self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
                     }
                 }
             }

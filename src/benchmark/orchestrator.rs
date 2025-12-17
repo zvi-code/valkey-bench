@@ -15,13 +15,17 @@ use super::counters::GlobalCounters;
 use super::event_worker::{EventWorker, EventWorkerResult};
 use super::worker::{BenchmarkWorker, RecallStats, WorkerResult};
 use crate::client::{BenchmarkClient, ConnectionFactory};
-use crate::cluster::{ClusterTopology, TopologyManager};
+use crate::cluster::{
+    build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, TopologyManager,
+};
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
-use crate::metrics::{MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::metrics::reporter::{BenchmarkResults, OutputFormat};
+use crate::metrics::{MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
-use crate::workload::{create_index, create_template, drop_index, get_index_info, wait_for_indexing, WorkloadType};
+use crate::workload::{
+    create_index, create_template, drop_index, get_index_info, wait_for_indexing, WorkloadType,
+};
 
 /// Benchmark result summary
 pub struct BenchmarkResult {
@@ -76,6 +80,9 @@ impl BenchmarkResult {
             println!("  max: {:.4}", self.recall_stats.max_recall);
             println!("  perfect (1.0): {}", self.recall_stats.perfect_count);
             println!("  zero (0.0): {}", self.recall_stats.zero_count);
+        } else if self.total_requests > 0 {
+            // Debug: show if recall wasn't computed
+            println!("\n(Recall not computed - requires dataset with ground truth)");
         }
     }
 }
@@ -89,6 +96,8 @@ pub struct Orchestrator {
     cluster_topology: Option<ClusterTopology>,
     /// Shared topology manager for dynamic cluster updates
     topology_manager: Option<Arc<TopologyManager>>,
+    /// Cluster tag map for vector ID to node routing (for vec-query with existing data)
+    cluster_tag_map: Option<Arc<ClusterTagMap>>,
 }
 
 impl Orchestrator {
@@ -128,6 +137,7 @@ impl Orchestrator {
             dataset: None,
             cluster_topology,
             topology_manager,
+            cluster_tag_map: None,
         })
     }
 
@@ -213,6 +223,80 @@ impl Orchestrator {
     /// Set dataset (for vector search)
     pub fn set_dataset(&mut self, dataset: DatasetContext) {
         self.dataset = Some(Arc::new(dataset));
+    }
+
+    /// Build cluster tag map by scanning cluster for existing vector keys
+    ///
+    /// This is used for vec-query with existing data to:
+    /// 1. Know which vectors exist in the cluster
+    /// 2. Map vector IDs to their cluster tags for proper routing
+    /// 3. Validate recall only against vectors that actually exist
+    pub fn build_cluster_tag_map(&mut self) -> Result<()> {
+        let search_config = match &self.config.search_config {
+            Some(cfg) => cfg,
+            None => {
+                info!("No search config - skipping cluster tag map");
+                return Ok(());
+            }
+        };
+
+        // Get capacity from dataset if available
+        let capacity = self
+            .dataset
+            .as_ref()
+            .map(|ds| ds.num_vectors())
+            .unwrap_or(1_000_000) as u64;
+
+        let is_cluster = self.cluster_topology.is_some();
+
+        info!(
+            "Building cluster tag map for prefix '{}' (capacity: {}, cluster: {})",
+            search_config.prefix, capacity, is_cluster
+        );
+
+        let tag_map = Arc::new(ClusterTagMap::new(
+            &search_config.prefix,
+            capacity,
+            is_cluster,
+        ));
+
+        // Only scan if in cluster mode with topology
+        if let Some(ref topology) = self.cluster_topology {
+            let nodes: Vec<_> = topology.nodes.clone();
+
+            let scan_config = ClusterScanConfig {
+                pattern: format!("{}*", search_config.prefix),
+                batch_size: 1000,
+                timeout: Duration::from_secs(5),
+                show_progress: !self.config.quiet,
+            };
+
+            match build_vector_id_mappings(&tag_map, &nodes, &scan_config) {
+                Ok(results) => {
+                    info!(
+                        "Cluster tag map built: {} vectors mapped from {} keys",
+                        tag_map.count(),
+                        results.total_keys
+                    );
+                }
+                Err(e) => {
+                    return Err(crate::utils::BenchmarkError::Config(format!(
+                        "Failed to build cluster tag map: {}",
+                        e
+                    )));
+                }
+            }
+        } else {
+            info!("Standalone mode - cluster tag map will not route by node");
+        }
+
+        self.cluster_tag_map = Some(tag_map);
+        Ok(())
+    }
+
+    /// Get cluster tag map
+    pub fn cluster_tag_map(&self) -> Option<Arc<ClusterTagMap>> {
+        self.cluster_tag_map.clone()
     }
 
     /// Run a single benchmark test
@@ -508,23 +592,28 @@ impl Orchestrator {
 
         let start_time = Instant::now();
 
+        // Clone topology for thread sharing
+        let topology = self.cluster_topology.clone();
+
         for worker_id in 0..self.config.threads as usize {
             let config = Arc::clone(&self.config);
             let counters = Arc::clone(&counters);
             let dataset = self.dataset.clone();
             let buffer = command_buffer.clone();
             let addrs = addresses.clone();
+            let topo = topology.clone();
 
             let handle = thread::Builder::new()
                 .name(format!("event-worker-{}", worker_id))
                 .spawn(move || {
-                    // Create event-driven worker
+                    // Create event-driven worker with topology for cluster-aware routing
                     match EventWorker::new(
                         worker_id,
                         addrs,
                         clients_per_thread,
                         &config,
                         buffer,
+                        topo.as_ref(),
                     ) {
                         Ok(worker) => worker.run(counters, dataset),
                         Err(e) => {

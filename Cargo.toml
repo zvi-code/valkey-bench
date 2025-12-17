@@ -67,3 +67,27 @@ codegen-units = 1
 [profile.bench]
 opt-level = 3
 debug = true
+
+[[bin]]
+name = "test-ftinfo"
+path = "src/bin/test_ftinfo.rs"
+
+[[bin]]
+name = "test-backfill"
+path = "src/bin/test_backfill.rs"
+
+[[bin]]
+name = "test-snapshot"
+path = "src/bin/test_snapshot.rs"
+
+[[bin]]
+name = "test-cluster-tag"
+path = "src/bin/test_cluster_tag.rs"
+
+[[bin]]
+name = "check-keys"
+path = "src/bin/check_keys.rs"
+
+[[bin]]
+name = "flush-cluster"
+path = "src/bin/flush_cluster.rs"

@@ -5,6 +5,7 @@
 
 use crate::client::RawConnection;
 use crate::config::SearchConfig;
+use crate::metrics::ft_info::{EngineType, FtInfoResult};
 use crate::utils::{RespEncoder, RespValue};
 
 /// Create a vector search index using FT.CREATE
@@ -127,15 +128,49 @@ pub fn drop_index(conn: &mut RawConnection, index_name: &str) -> Result<(), Stri
 }
 
 /// Get index information using FT.INFO
+/// Uses engine-aware parsing from metrics::ft_info module
 pub fn get_index_info(conn: &mut RawConnection, index_name: &str) -> Result<IndexInfo, String> {
+    // First detect engine type from INFO SEARCH
+    let engine_type = detect_engine_type(conn);
+
+    // Get FT.INFO
     let mut encoder = RespEncoder::with_capacity(64);
     encoder.encode_command_str(&["FT.INFO", index_name]);
 
     match conn.execute(&encoder) {
-        Ok(RespValue::Array(arr)) => parse_index_info(&arr),
         Ok(RespValue::Error(e)) => Err(e),
-        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+        Ok(reply) => {
+            // Use proper engine-aware parsing
+            let ft_info = FtInfoResult::from_response(&reply, engine_type);
+
+            // Determine if indexing is in progress based on engine-specific fields
+            let indexing = ft_info.backfill_in_progress || !ft_info.is_ready();
+            let percent_indexed = ft_info.backfill_complete_percent;
+
+            Ok(IndexInfo {
+                index_name: ft_info.index_name.clone().unwrap_or_default(),
+                num_docs: ft_info.num_docs as u64,
+                max_doc_id: 0, // Not always available
+                num_records: ft_info.num_indexed_vectors as u64,
+                indexing,
+                percent_indexed,
+            })
+        }
         Err(e) => Err(format!("IO error: {}", e)),
+    }
+}
+
+/// Detect engine type from INFO SEARCH response
+fn detect_engine_type(conn: &mut RawConnection) -> EngineType {
+    let mut encoder = RespEncoder::with_capacity(64);
+    encoder.encode_command_str(&["INFO", "SEARCH"]);
+
+    match conn.execute(&encoder) {
+        Ok(RespValue::BulkString(data)) => {
+            let info_str = String::from_utf8_lossy(&data);
+            EngineType::detect(&info_str)
+        }
+        _ => EngineType::Unknown,
     }
 }
 
@@ -150,67 +185,15 @@ pub struct IndexInfo {
     pub percent_indexed: f64,
 }
 
-fn parse_index_info(arr: &[RespValue]) -> Result<IndexInfo, String> {
-    let mut info = IndexInfo::default();
-
-    // FT.INFO returns an array of key-value pairs
-    let mut i = 0;
-    while i < arr.len() - 1 {
-        if let RespValue::BulkString(key) = &arr[i] {
-            let key_str = String::from_utf8_lossy(key);
-            match key_str.as_ref() {
-                "index_name" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.index_name = String::from_utf8_lossy(v).to_string();
-                    }
-                }
-                "num_docs" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.num_docs = String::from_utf8_lossy(v).parse().unwrap_or(0);
-                    }
-                    if let RespValue::Integer(v) = &arr[i + 1] {
-                        info.num_docs = *v as u64;
-                    }
-                }
-                "max_doc_id" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.max_doc_id = String::from_utf8_lossy(v).parse().unwrap_or(0);
-                    }
-                    if let RespValue::Integer(v) = &arr[i + 1] {
-                        info.max_doc_id = *v as u64;
-                    }
-                }
-                "num_records" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.num_records = String::from_utf8_lossy(v).parse().unwrap_or(0);
-                    }
-                    if let RespValue::Integer(v) = &arr[i + 1] {
-                        info.num_records = *v as u64;
-                    }
-                }
-                "indexing" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.indexing = String::from_utf8_lossy(v) == "1";
-                    }
-                    if let RespValue::Integer(v) = &arr[i + 1] {
-                        info.indexing = *v == 1;
-                    }
-                }
-                "percent_indexed" => {
-                    if let RespValue::BulkString(v) = &arr[i + 1] {
-                        info.percent_indexed = String::from_utf8_lossy(v).parse().unwrap_or(0.0);
-                    }
-                }
-                _ => {}
-            }
-        }
-        i += 2;
-    }
-
-    Ok(info)
-}
-
 /// Wait for index to be fully indexed (background indexing complete)
+///
+/// Backfill always runs when an index is created - it scans all existing keys
+/// matching the prefix. For an empty database, it completes instantly.
+/// After backfill completes, new inserts are synchronous (no additional backfill).
+///
+/// Uses engine-aware status checking:
+/// - EC/Valkey: waits for state=ready AND backfill_in_progress=false
+/// - MemoryDB: waits for index_status=AVAILABLE AND degradation_percentage=0
 pub fn wait_for_indexing(
     conn: &mut RawConnection,
     index_name: &str,
@@ -220,23 +203,40 @@ pub fn wait_for_indexing(
 
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
+    let poll_interval = Duration::from_millis(100);
+
+    // Detect engine type once
+    let engine_type = detect_engine_type(conn);
 
     loop {
-        let info = get_index_info(conn, index_name)?;
+        // Get FT.INFO with engine-aware parsing
+        let mut encoder = RespEncoder::with_capacity(64);
+        encoder.encode_command_str(&["FT.INFO", index_name]);
 
-        if !info.indexing || info.percent_indexed >= 1.0 {
+        let ft_info = match conn.execute(&encoder) {
+            Ok(RespValue::Error(e)) => return Err(e),
+            Ok(reply) => FtInfoResult::from_response(&reply, engine_type),
+            Err(e) => return Err(format!("IO error: {}", e)),
+        };
+
+        // Engine-specific readiness check
+        // For EC: state=ready AND backfill_in_progress=false
+        // For MemoryDB: status=AVAILABLE AND degradation=0
+        if ft_info.is_ready() {
             return Ok(());
         }
 
         if start.elapsed() > timeout {
             return Err(format!(
-                "Timeout waiting for index {} to complete ({}% indexed)",
+                "Timeout waiting for index {} to complete ({}% indexed, {} docs, backfill_in_progress={})",
                 index_name,
-                info.percent_indexed * 100.0
+                ft_info.backfill_complete_percent * 100.0,
+                ft_info.num_docs,
+                ft_info.backfill_in_progress
             ));
         }
 
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(poll_interval);
     }
 }
 
@@ -259,21 +259,14 @@ pub fn parse_search_response(response: &RespValue) -> Vec<String> {
     doc_ids
 }
 
-/// Extract numeric IDs from document keys (e.g., "vec:000000000123" -> 123)
+/// Extract numeric IDs from document keys
+/// Uses the unified key format from key_format module
+///
+/// Handles both formats:
+/// - Simple: "vec:000000000123" -> 123
+/// - With cluster tag: "vec:{ABC}:000000000123" -> 123
 pub fn extract_numeric_ids(doc_ids: &[String], prefix: &str) -> Vec<u64> {
-    doc_ids
-        .iter()
-        .filter_map(|id| {
-            let stripped = id.strip_prefix(prefix)?;
-            // Handle the case where ID is 0 (all zeros become empty string)
-            let trimmed = stripped.trim_start_matches('0');
-            if trimmed.is_empty() {
-                Some(0)
-            } else {
-                trimmed.parse().ok()
-            }
-        })
-        .collect()
+    super::key_format::extract_numeric_ids_from_keys(doc_ids, prefix)
 }
 
 #[cfg(test)]
@@ -308,5 +301,28 @@ mod tests {
 
         let ids = extract_numeric_ids(&doc_ids, "vec:");
         assert_eq!(ids, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_extract_numeric_ids_with_cluster_tag() {
+        let doc_ids = vec![
+            "zvec_:{ABC}:000000000001".to_string(),
+            "zvec_:{XYZ}:000000000042".to_string(),
+            "zvec_:{DEF}:000000000100".to_string(),
+        ];
+
+        let ids = extract_numeric_ids(&doc_ids, "zvec_:");
+        assert_eq!(ids, vec![1, 42, 100]);
+    }
+
+    #[test]
+    fn test_extract_numeric_ids_mixed_formats() {
+        let doc_ids = vec![
+            "vec:000000000001".to_string(),         // Simple format
+            "vec:{ABC}:000000000042".to_string(),   // Cluster tag format
+        ];
+
+        let ids = extract_numeric_ids(&doc_ids, "vec:");
+        assert_eq!(ids, vec![1, 42]);
     }
 }

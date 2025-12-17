@@ -116,14 +116,36 @@ fn run() -> Result<()> {
     }
 
     // Create index if needed for vector search workloads
-    let has_vec_query = config.tests.iter().any(|t| t.to_lowercase().contains("vec-query"));
-    if has_vec_query && !config.skip_index_create {
+    // This matches C behavior: create index whenever --search is enabled with vec-* workloads
+    let has_vec_workload = config.tests.iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower.contains("vec-load")
+            || lower.contains("vec-query")
+            || lower.contains("vec-del")
+            || lower.contains("vec-insert")
+    });
+
+    if has_vec_workload && !config.skip_index_create {
         if let Some(ref _search_config) = config.search_config {
             info!("Creating vector search index...");
             orchestrator.create_search_index(true)?; // overwrite existing
 
             info!("Waiting for index to be ready...");
             orchestrator.wait_for_search_indexing(300)?; // 5 minute timeout
+        }
+    }
+
+    // Build cluster tag map for all vector workloads
+    // This scans the cluster to discover which vectors exist and their cluster tags
+    // Used by:
+    // - vec-load: skip keys that already exist (only insert missing)
+    // - vec-query: know which vectors exist for recall computation
+    // - vec-delete/vec-update: operate on existing vectors
+    // If no keys exist, scan completes very fast
+    if has_vec_workload {
+        if config.search_config.is_some() {
+            info!("Building cluster tag map for existing vectors...");
+            orchestrator.build_cluster_tag_map()?;
         }
     }
 
