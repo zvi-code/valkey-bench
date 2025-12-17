@@ -119,10 +119,7 @@ fn run() -> Result<()> {
     // This matches C behavior: create index whenever --search is enabled with vec-* workloads
     let has_vec_workload = config.tests.iter().any(|t| {
         let lower = t.to_lowercase();
-        lower.contains("vec-load")
-            || lower.contains("vec-query")
-            || lower.contains("vec-del")
-            || lower.contains("vec-insert")
+        lower.starts_with("vec")  // Match vecload, vecquery, vecdelete, vec-load, vec-query, etc.
     });
 
     if has_vec_workload && !config.skip_index_create {
