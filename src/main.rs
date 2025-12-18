@@ -2,6 +2,8 @@
 //!
 //! This tool supports standard Redis/Valkey benchmarks as well as
 //! vector search (FT.SEARCH) benchmarks with recall verification.
+//!
+//! When run with `--cli`, operates as an interactive CLI (like valkey-cli).
 
 // Allow dead code during development - fields/types will be used in later phases
 #![allow(dead_code)]
@@ -12,6 +14,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod benchmark;
+mod cli_mode;
 mod client;
 mod cluster;
 mod config;
@@ -79,6 +82,20 @@ fn print_banner(config: &BenchmarkConfig) {
 fn run() -> Result<()> {
     // Parse CLI arguments
     let args = CliArgs::parse_args();
+
+    // Check for CLI mode
+    if args.cli_mode {
+        // Setup minimal logging for CLI mode
+        setup_logging(false, true); // quiet mode
+
+        // If there are trailing args, execute them as a command and exit
+        if !args.command_args.is_empty() {
+            return cli_mode::run_cli_command(&args, &args.command_args);
+        }
+
+        // Otherwise run interactive CLI
+        return cli_mode::run_cli_mode(&args);
+    }
 
     // Setup logging
     setup_logging(args.verbose, args.quiet);

@@ -12,11 +12,22 @@ use std::path::PathBuf;
 #[command(version, about, long_about = None)]
 #[command(arg_required_else_help = false)]
 #[command(disable_help_flag = true)]
+#[command(trailing_var_arg = true)]
 #[allow(clippy::manual_non_exhaustive)]
 pub struct CliArgs {
     /// Print help information
     #[arg(long = "help", action = clap::ArgAction::Help)]
     help: (),
+
+    // ===== CLI Mode =====
+    /// Run in interactive CLI mode (like valkey-cli)
+    #[arg(long = "cli")]
+    pub cli_mode: bool,
+
+    /// Command arguments when using --cli (non-interactive mode)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    pub command_args: Vec<String>,
+
     // ===== Connection Options =====
     /// Server hostname (can be specified multiple times for cluster)
     #[arg(short = 'h', long = "host", default_value = "127.0.0.1", action = clap::ArgAction::Append)]
