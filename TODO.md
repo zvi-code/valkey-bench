@@ -14,10 +14,18 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 **Description:** Import functionality from c code
 **Benefits:** 
 
-### 2. Tags support
+### 3. Search-workload: Pin ground truth vectors
 **Status:** Planned
-**Description:** Import functionality from c code
+**Description:** Hold a bool map to check if vector is ground truth or not. If it is, do not evict it from memory
 **Benefits:** 
+
+### 4. Support setting TTL/expiry on vectors
+**Status:** Planned
+**Description:** Add ability to set TTL/expiry on inserted vectors.
+**Benefits:** Test scenarios involving data expiration and cache eviction.
+
+
+
 
 ## Loader Enhancements
 

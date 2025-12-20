@@ -11,8 +11,6 @@ pub mod client;
 pub mod cluster;
 pub mod config;
 pub mod dataset;
-#[cfg(feature = "glide-control-plane")]
-pub mod glide;
 pub mod metrics;
 pub mod optimizer;
 pub mod utils;

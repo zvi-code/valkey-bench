@@ -18,7 +18,66 @@ use mio::net::TcpStream as MioTcpStream;
 use mio::{Events, Interest, Poll, Token};
 
 use super::counters::GlobalCounters;
-use super::worker::RecallStats;
+
+/// Recall statistics for vector search
+#[derive(Debug, Default)]
+pub struct RecallStats {
+    pub total_queries: u64,
+    pub sum_recall: f64,
+    pub min_recall: f64,
+    pub max_recall: f64,
+    pub perfect_count: u64, // recall == 1.0
+    pub zero_count: u64,    // recall == 0.0
+}
+
+impl RecallStats {
+    pub fn new() -> Self {
+        Self {
+            min_recall: f64::MAX,
+            max_recall: f64::MIN,
+            ..Default::default()
+        }
+    }
+
+    pub fn record(&mut self, recall: f64) {
+        self.total_queries += 1;
+        self.sum_recall += recall;
+        self.min_recall = self.min_recall.min(recall);
+        self.max_recall = self.max_recall.max(recall);
+
+        if (recall - 1.0).abs() < f64::EPSILON {
+            self.perfect_count += 1;
+        }
+        if recall < f64::EPSILON {
+            self.zero_count += 1;
+        }
+    }
+
+    pub fn average(&self) -> f64 {
+        if self.total_queries > 0 {
+            self.sum_recall / self.total_queries as f64
+        } else {
+            0.0
+        }
+    }
+
+    pub fn merge(&mut self, other: &RecallStats) {
+        if other.total_queries == 0 {
+            return;
+        }
+        self.total_queries += other.total_queries;
+        self.sum_recall += other.sum_recall;
+        if other.min_recall < self.min_recall {
+            self.min_recall = other.min_recall;
+        }
+        if other.max_recall > self.max_recall {
+            self.max_recall = other.max_recall;
+        }
+        self.perfect_count += other.perfect_count;
+        self.zero_count += other.zero_count;
+    }
+}
+
 use crate::client::{CommandBuffer, PlaceholderOffset, PlaceholderType};
 use crate::cluster::{ClusterTagMap, ClusterTopology};
 use crate::config::BenchmarkConfig;
@@ -365,6 +424,45 @@ pub struct EventWorkerResult {
     pub requests_processed: u64,
 }
 
+/// Simple token bucket for rate limiting
+struct TokenBucket {
+    tokens: f64,
+    max_tokens: f64,
+    tokens_per_ms: f64,
+    last_update: Instant,
+}
+
+impl TokenBucket {
+    fn new(rps: u64) -> Self {
+        let tokens_per_ms = rps as f64 / 1000.0;
+        Self {
+            tokens: 0.0,
+            max_tokens: rps as f64, // 1 second burst
+            tokens_per_ms,
+            last_update: Instant::now(),
+        }
+    }
+
+    fn acquire(&mut self, count: u32) -> Option<Duration> {
+        // Refill tokens based on elapsed time
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last_update).as_secs_f64() * 1000.0;
+        self.tokens = (self.tokens + elapsed_ms * self.tokens_per_ms).min(self.max_tokens);
+        self.last_update = now;
+
+        let needed = count as f64;
+        if self.tokens >= needed {
+            self.tokens -= needed;
+            None // Can proceed immediately
+        } else {
+            // Calculate wait time
+            let deficit = needed - self.tokens;
+            let wait_ms = deficit / self.tokens_per_ms;
+            Some(Duration::from_secs_f64(wait_ms / 1000.0))
+        }
+    }
+}
+
 /// Event-driven benchmark worker
 pub struct EventWorker {
     id: usize,
@@ -395,6 +493,8 @@ pub struct EventWorker {
     node_ready_queues: std::collections::HashMap<(String, u16), VecDeque<usize>>,
     /// Global ready queue for standalone mode or non-slot-aware workloads
     global_ready_queue: VecDeque<usize>,
+    /// Rate limiter (optional, for --rps flag)
+    rate_limiter: Option<TokenBucket>,
 }
 
 impl EventWorker {
@@ -517,6 +617,15 @@ impl EventWorker {
         // Build global ready queue with all client indices
         let global_ready_queue: VecDeque<usize> = (0..clients.len()).collect();
 
+        // Rate limiter (if --rps specified)
+        let rate_limiter = if config.requests_per_second > 0 {
+            // Divide RPS among threads
+            let per_thread_rps = config.requests_per_second / config.threads.max(1) as u64;
+            Some(TokenBucket::new(per_thread_rps.max(1)))
+        } else {
+            None
+        };
+
         Ok(Self {
             id,
             poll,
@@ -540,6 +649,7 @@ impl EventWorker {
             regular_key_prefix: config.key_prefix.clone(),
             node_ready_queues,
             global_ready_queue,
+            rate_limiter,
         })
     }
 
@@ -775,6 +885,15 @@ impl EventWorker {
         }
     }
 
+    /// Apply rate limiting if configured
+    fn apply_rate_limit(&mut self) {
+        if let Some(ref mut limiter) = self.rate_limiter {
+            if let Some(wait) = limiter.acquire(self.pipeline as u32) {
+                std::thread::sleep(wait);
+            }
+        }
+    }
+
     /// Run the event loop
     pub fn run(
         mut self,
@@ -788,6 +907,7 @@ impl EventWorker {
         if slot_aware {
             // For slot-aware: try to start as many requests as possible
             while counters.claim_batch(batch_size).is_some() {
+                self.apply_rate_limit();
                 if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
                     // No ready client available, undo the claim
                     // (counters don't support undo, so we'll just break)
@@ -802,6 +922,7 @@ impl EventWorker {
                     self.return_client_to_ready(client_idx);
                     break;
                 }
+                self.apply_rate_limit();
                 self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
                 self.clients[client_idx].start_request();
             }
@@ -907,6 +1028,7 @@ impl EventWorker {
                                 } else {
                                     // Non-slot-aware: reuse client directly
                                     if counters.claim_batch(batch_size).is_some() {
+                                        self.apply_rate_limit();
                                         self.fill_placeholders_for(
                                             client_idx,
                                             &counters,
@@ -941,6 +1063,7 @@ impl EventWorker {
                     if counters.is_duration_exceeded() {
                         break;
                     }
+                    self.apply_rate_limit();
                     if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
                         // No ready client, break (work still claimed, will be retried)
                         break;
@@ -957,6 +1080,7 @@ impl EventWorker {
                         self.return_client_to_ready(client_idx);
                         break;
                     }
+                    self.apply_rate_limit();
                     self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
                     self.clients[client_idx].start_request();
                     let _ = self.clients[client_idx].try_write();
@@ -1080,5 +1204,65 @@ fn write_fixed_width_u64(buf: &mut [u8], offset: usize, value: u64, width: usize
     for i in (0..width).rev() {
         buf[offset + i] = b'0' + (v % 10) as u8;
         v /= 10;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recall_stats() {
+        let mut stats = RecallStats::new();
+
+        stats.record(1.0);
+        stats.record(0.5);
+        stats.record(0.0);
+
+        assert_eq!(stats.total_queries, 3);
+        assert!((stats.average() - 0.5).abs() < 0.001);
+        assert_eq!(stats.perfect_count, 1);
+        assert_eq!(stats.zero_count, 1);
+    }
+
+    #[test]
+    fn test_recall_stats_merge() {
+        let mut stats1 = RecallStats::new();
+        stats1.record(1.0);
+        stats1.record(0.8);
+
+        let mut stats2 = RecallStats::new();
+        stats2.record(0.5);
+        stats2.record(0.0);
+
+        stats1.merge(&stats2);
+
+        assert_eq!(stats1.total_queries, 4);
+        assert!((stats1.average() - 0.575).abs() < 0.001); // (1.0 + 0.8 + 0.5 + 0.0) / 4
+        assert_eq!(stats1.perfect_count, 1);
+        assert_eq!(stats1.zero_count, 1);
+    }
+
+    #[test]
+    fn test_token_bucket() {
+        let mut bucket = TokenBucket::new(1000); // 1000 RPS
+
+        // Should be able to acquire immediately after some time
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(bucket.acquire(5).is_none());
+    }
+
+    #[test]
+    fn test_token_bucket_wait() {
+        let mut bucket = TokenBucket::new(100); // 100 RPS
+
+        // Try to acquire more than accumulated
+        let wait = bucket.acquire(200);
+        assert!(wait.is_some());
+        // Should need to wait approximately 2 seconds for 200 tokens at 100 RPS
+        // But since some time may have passed, just verify we need to wait
+        if let Some(duration) = wait {
+            assert!(duration.as_secs_f64() > 0.1);
+        }
     }
 }

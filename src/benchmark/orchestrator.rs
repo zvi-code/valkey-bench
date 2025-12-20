@@ -12,9 +12,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tracing::info;
 
 use super::counters::GlobalCounters;
-use super::event_worker::{EventWorker, EventWorkerResult};
-use super::worker::{BenchmarkWorker, RecallStats, WorkerResult};
-use crate::client::{BenchmarkClient, ConnectionFactory, ControlPlane, ControlPlaneExt};
+use super::event_worker::{EventWorker, EventWorkerResult, RecallStats};
+use crate::client::{ConnectionFactory, ControlPlane, ControlPlaneExt};
 use crate::cluster::{
     build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, TopologyManager,
 };
@@ -299,127 +298,6 @@ impl Orchestrator {
         self.cluster_tag_map.clone()
     }
 
-    /// Run a single benchmark test
-    pub fn run_test(&self, workload: WorkloadType) -> Result<BenchmarkResult> {
-        // Create command template (use cluster mode if we have cluster topology)
-        let cluster_mode = self.cluster_topology.is_some();
-        let template = create_template(
-            workload,
-            &self.config.key_prefix,
-            self.config.data_size,
-            self.config.search_config.as_ref(),
-            cluster_mode,
-        );
-
-        // Build command buffer for pipeline
-        let command_buffer = template.build(self.config.pipeline as usize);
-
-        // Create global counters (duration-based or request-count based)
-        let counters = Arc::new(if let Some(duration) = self.config.duration_secs {
-            GlobalCounters::with_duration(duration)
-        } else {
-            GlobalCounters::with_requests(self.config.requests)
-        });
-
-        // Calculate clients per thread
-        let clients_per_thread = self.config.clients_per_thread() as usize;
-
-        // Spawn worker threads
-        let mut handles: Vec<JoinHandle<WorkerResult>> =
-            Vec::with_capacity(self.config.threads as usize);
-
-        let start_time = Instant::now();
-
-        // Get addresses for workers (cluster primaries or standalone addresses)
-        let addresses = self.get_benchmark_addresses();
-        if addresses.is_empty() {
-            return Err(crate::utils::BenchmarkError::Config(
-                "No available server addresses".to_string(),
-            ));
-        }
-
-        for worker_id in 0..self.config.threads as usize {
-            let config = Arc::clone(&self.config);
-            let counters = Arc::clone(&counters);
-            let dataset = self.dataset.clone();
-            let buffer = command_buffer.clone();
-            let factory = self.connection_factory.clone();
-            let topology_manager = self.topology_manager.clone();
-            // Distribute workers across available addresses (round-robin)
-            let (host, port) = addresses[worker_id % addresses.len()].clone();
-
-            let handle = thread::Builder::new()
-                .name(format!("worker-{}", worker_id))
-                .spawn(move || {
-                    // Create clients for this worker
-                    let mut clients = Vec::with_capacity(clients_per_thread);
-                    for _ in 0..clients_per_thread {
-                        match factory.create(&host, port) {
-                            Ok(conn) => {
-                                let client = BenchmarkClient::new(
-                                    conn,
-                                    buffer.clone(),
-                                    config.pipeline as usize,
-                                );
-                                clients.push(client);
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Worker {}: Failed to create connection: {}",
-                                    worker_id, e
-                                );
-                                // Return empty result with error count
-                                return WorkerResult {
-                                    worker_id,
-                                    histogram: Histogram::new_with_bounds(1, 3_600_000_000, 3)
-                                        .expect("Failed to create histogram"),
-                                    recall_stats: RecallStats::new(),
-                                    redirect_count: 0,
-                                    topology_refresh_count: 0,
-                                    error_count: 1,
-                                    requests_processed: 0,
-                                };
-                            }
-                        }
-                    }
-
-                    // Create worker with optional topology manager for cluster mode
-                    let mut worker = BenchmarkWorker::new(worker_id, clients, &config);
-                    if let Some(tm) = topology_manager {
-                        worker = worker.with_topology_manager(tm);
-                    }
-                    worker.run(counters, dataset)
-                })
-                .expect("Failed to spawn worker thread");
-
-            handles.push(handle);
-        }
-
-        // Progress reporting (if not quiet)
-        if !self.config.quiet {
-            let counters_clone = Arc::clone(&counters);
-            let total = self.config.requests;
-            let duration_secs = self.config.duration_secs;
-            thread::spawn(move || {
-                Self::report_progress(&counters_clone, total, duration_secs);
-            });
-        }
-
-        // Wait for workers to complete
-        let results: Vec<WorkerResult> = handles
-            .into_iter()
-            .map(|h| h.join().expect("Worker thread panicked"))
-            .collect();
-
-        let duration = start_time.elapsed();
-
-        // Signal shutdown to progress reporter
-        counters.signal_shutdown();
-
-        // Merge results (with empty node metrics for now - can be enhanced later)
-        self.merge_results(workload.as_str(), results, duration, Vec::new())
-    }
-
     /// Report progress during benchmark
     fn report_progress(counters: &GlobalCounters, total: u64, duration_secs: Option<u64>) {
         if let Some(duration) = duration_secs {
@@ -483,43 +361,6 @@ impl Orchestrator {
 
             pb.finish_with_message("Complete");
         }
-    }
-
-    /// Merge results from all workers
-    fn merge_results(
-        &self,
-        test_name: &str,
-        results: Vec<WorkerResult>,
-        duration: Duration,
-        node_metrics: Vec<crate::metrics::node_metrics::NodeMetricsSnapshot>,
-    ) -> Result<BenchmarkResult> {
-        // Initialize merged histogram
-        let mut merged_histogram =
-            Histogram::new_with_bounds(1, 3_600_000_000, 3).expect("Failed to create histogram");
-
-        let mut merged_recall = RecallStats::new();
-        let mut total_requests = 0u64;
-        let mut error_count = 0u64;
-
-        for result in results {
-            merged_histogram.add(&result.histogram).ok();
-            merged_recall.merge(&result.recall_stats);
-            total_requests += result.requests_processed;
-            error_count += result.error_count;
-        }
-
-        let throughput = total_requests as f64 / duration.as_secs_f64();
-
-        Ok(BenchmarkResult {
-            test_name: test_name.to_string(),
-            total_requests,
-            duration,
-            throughput,
-            histogram: merged_histogram,
-            recall_stats: merged_recall,
-            error_count,
-            node_metrics,
-        })
     }
 
     /// Merge results from event-driven workers
@@ -587,7 +428,7 @@ impl Orchestrator {
                         throughput: 0.0,
                         histogram: Histogram::new_with_bounds(1, 3_600_000_000, 3)
                             .expect("Failed to create histogram"),
-                        recall_stats: super::worker::RecallStats::new(),
+                        recall_stats: RecallStats::new(),
                         error_count: 0,
                         node_metrics: Vec::new(),
                     });
@@ -741,24 +582,6 @@ impl Orchestrator {
             println!("\nRunning test: {}", workload);
             // Use event-driven I/O for maximum performance (like C's ae)
             let result = self.run_test_event(workload)?;
-            result.print_summary();
-            results.push(result);
-        }
-
-        Ok(results)
-    }
-
-    /// Run all configured tests using blocking I/O (legacy)
-    pub fn run_all_blocking(&self) -> Result<Vec<BenchmarkResult>> {
-        let mut results = Vec::new();
-
-        for test_name in &self.config.tests {
-            let workload = WorkloadType::parse(test_name).ok_or_else(|| {
-                crate::utils::BenchmarkError::Config(format!("Unknown test: {}", test_name))
-            })?;
-
-            println!("\nRunning test: {}", workload);
-            let result = self.run_test(workload)?;
             result.print_summary();
             results.push(result);
         }

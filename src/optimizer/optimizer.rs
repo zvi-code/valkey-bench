@@ -314,7 +314,7 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::worker::RecallStats;
+    use crate::benchmark::RecallStats;
     use hdrhistogram::Histogram;
     use std::time::Duration;
 
