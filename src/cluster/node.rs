@@ -25,6 +25,10 @@ pub struct ClusterNode {
     pub az: Option<String>,
     /// Is node currently available?
     pub available: bool,
+    /// Shard ID (1-based, assigned by topology)
+    pub shard_id: Option<u16>,
+    /// Index within shard (1-based: 1=primary, 2+=replicas)
+    pub shard_index: Option<u16>,
 }
 
 impl ClusterNode {
@@ -36,6 +40,28 @@ impl ClusterNode {
     /// Get node address as string
     pub fn address(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// Get display name in format "ShardId-Index-Role" (e.g., "1-1-P", "1-2-R")
+    /// If shard info is not available, falls back to truncated IP:port
+    pub fn display_name(&self) -> String {
+        if let (Some(shard_id), Some(shard_index)) = (self.shard_id, self.shard_index) {
+            let role = if self.is_primary { "P" } else { "R" };
+            format!("{}-{}-{}", shard_id, shard_index, role)
+        } else {
+            // Fallback to truncated IP:port
+            self.short_address()
+        }
+    }
+
+    /// Get short address showing only last two octets of IP
+    pub fn short_address(&self) -> String {
+        let parts: Vec<&str> = self.host.split('.').collect();
+        if parts.len() >= 2 {
+            format!("..{}.{}:{}", parts[parts.len() - 2], parts[parts.len() - 1], self.port)
+        } else {
+            self.address()
+        }
     }
 }
 
@@ -100,6 +126,8 @@ pub fn parse_cluster_node_line(line: &str) -> Option<ClusterNode> {
         flags,
         az: None, // Not available in standard CLUSTER NODES
         available,
+        shard_id: None,     // Assigned later by topology
+        shard_index: None,  // Assigned later by topology
     })
 }
 

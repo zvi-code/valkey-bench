@@ -61,6 +61,34 @@ impl ClusterTopology {
             return Err("No primary nodes found".to_string());
         }
 
+        // Assign shard IDs and indices
+        // Sort primaries by their first slot to ensure consistent ordering
+        let mut sorted_primaries: Vec<(usize, u16)> = primary_indices
+            .iter()
+            .map(|&idx| {
+                let first_slot = nodes[idx].slots.first().copied().unwrap_or(u16::MAX);
+                (idx, first_slot)
+            })
+            .collect();
+        sorted_primaries.sort_by_key(|(_, slot)| *slot);
+
+        // Assign shard IDs (1-based)
+        for (shard_id, (primary_idx, _)) in sorted_primaries.iter().enumerate() {
+            let shard_id = (shard_id + 1) as u16;
+            
+            // Assign to primary (index 1)
+            nodes[*primary_idx].shard_id = Some(shard_id);
+            nodes[*primary_idx].shard_index = Some(1);
+            
+            // Assign to replicas (index 2, 3, ...)
+            if let Some(replica_indices) = replica_map.get(&nodes[*primary_idx].id) {
+                for (replica_offset, &replica_idx) in replica_indices.iter().enumerate() {
+                    nodes[replica_idx].shard_id = Some(shard_id);
+                    nodes[replica_idx].shard_index = Some((replica_offset + 2) as u16);
+                }
+            }
+        }
+
         Ok(Self {
             nodes,
             slot_map,
@@ -176,6 +204,46 @@ impl ClusterTopology {
             .map(|n| (n.host.clone(), n.port, n.is_primary))
             .collect()
     }
+
+    /// Get node by address (host:port)
+    pub fn get_node_by_address(&self, host: &str, port: u16) -> Option<&ClusterNode> {
+        self.nodes.iter().find(|n| n.host == host && n.port == port)
+    }
+
+    /// Get display name for a node by address
+    /// Returns the shard-based name (e.g., "1-1-P") if available
+    pub fn get_node_display_name(&self, address: &str) -> String {
+        // Parse address as "host:port"
+        if let Some((host, port_str)) = address.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                if let Some(node) = self.get_node_by_address(host, port) {
+                    return node.display_name();
+                }
+            }
+        }
+        // Fallback to truncated address
+        truncate_node_address(address)
+    }
+
+    /// Check if all nodes use the same port
+    pub fn all_same_port(&self) -> bool {
+        if self.nodes.is_empty() {
+            return true;
+        }
+        let first_port = self.nodes[0].port;
+        self.nodes.iter().all(|n| n.port == first_port)
+    }
+}
+
+/// Truncate a node address for display (show last two IP octets)
+pub fn truncate_node_address(address: &str) -> String {
+    if let Some((host, port)) = address.rsplit_once(':') {
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() >= 2 {
+            return format!("..{}.{}:{}", parts[parts.len() - 2], parts[parts.len() - 1], port);
+        }
+    }
+    address.to_string()
 }
 
 /// CRC16 implementation for Redis cluster slot calculation (XMODEM)

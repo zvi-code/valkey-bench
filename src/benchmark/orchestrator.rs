@@ -20,9 +20,9 @@ use crate::cluster::{
 };
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
-use crate::metrics::info_fields::default_info_fields;
+use crate::metrics::info_fields::{default_info_fields, default_search_info_fields};
 use crate::metrics::reporter::{BenchmarkResults, OutputFormat};
-use crate::metrics::snapshot::{ClusterSnapshot, SnapshotBuilder};
+use crate::metrics::snapshot::{compare_snapshots, print_per_node_matrix, ClusterSnapshot, SnapshotBuilder};
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
@@ -505,6 +505,46 @@ impl Orchestrator {
         builder.build()
     }
 
+    /// Capture a cluster snapshot of INFO SEARCH stats from all nodes
+    ///
+    /// Uses the snapshot infrastructure to collect and aggregate search metrics
+    /// across all cluster nodes (or standalone node).
+    fn capture_search_snapshot(&self, label: &str) -> ClusterSnapshot {
+        let addresses = self.get_benchmark_addresses();
+        let fields = default_search_info_fields();
+        let mut builder = SnapshotBuilder::new(label, fields);
+
+        for (host, port) in addresses {
+            let node_id = format!("{}:{}", host, port);
+            // Determine if this is a primary node
+            let is_primary = if let Some(ref topology) = self.cluster_topology {
+                topology.primaries().any(|p| p.host == host && p.port == port)
+            } else {
+                true // Standalone mode - treat as primary
+            };
+
+            match self.connection_factory.create(&host, port) {
+                Ok(mut conn) => {
+                    // Get INFO SEARCH section
+                    match conn.info("search") {
+                        Ok(info_str) => {
+                            builder.add_node(&node_id, is_primary, &info_str);
+                        }
+                        Err(_) => {
+                            // Silently ignore errors - stats capture is best-effort
+                            // This is expected for non-search workloads or servers without search
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Silently ignore connection errors
+                }
+            }
+        }
+
+        builder.build()
+    }
+
     /// Extract keyspace stats from a snapshot
     fn keyspace_stats_from_snapshot(snapshot: &ClusterSnapshot) -> KeyspaceStats {
         let hits = snapshot.get_value("keyspace_hits").unwrap_or(0) as u64;
@@ -807,6 +847,7 @@ impl Orchestrator {
 
         // Capture snapshot before benchmark starts (for keyspace stats diff)
         let snapshot_before = self.capture_info_snapshot("before");
+        let search_snapshot_before = self.capture_search_snapshot("before");
 
         // Spawn event-driven worker threads
         let mut handles: Vec<thread::JoinHandle<EventWorkerResult>> =
@@ -910,8 +951,9 @@ impl Orchestrator {
 
         let duration = start_time.elapsed();
 
-        // Capture snapshot after benchmark completes
+        // Capture snapshots after benchmark completes
         let snapshot_after = self.capture_info_snapshot("after");
+        let search_snapshot_after = self.capture_search_snapshot("after");
 
         // Signal shutdown to progress reporter
         counters.signal_shutdown();
@@ -926,6 +968,19 @@ impl Orchestrator {
             hits: stats_after.hits.saturating_sub(stats_before.hits),
             misses: stats_after.misses.saturating_sub(stats_before.misses),
         };
+
+        // Display per-node statistics matrix (if not quiet and cluster mode)
+        if !self.config.quiet && self.cluster_topology.is_some() {
+            let topo = self.cluster_topology.as_ref();
+            
+            // Display INFO stats diff (keyspace hits/misses, cmdstats)
+            let info_diff = compare_snapshots(&snapshot_before, &snapshot_after, &default_info_fields());
+            print_per_node_matrix(&info_diff, topo);
+
+            // Display INFO SEARCH diff (search-specific metrics)
+            let search_diff = compare_snapshots(&search_snapshot_before, &search_snapshot_after, &default_search_info_fields());
+            print_per_node_matrix(&search_diff, topo);
+        }
 
         Ok(result)
     }

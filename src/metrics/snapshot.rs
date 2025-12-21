@@ -263,10 +263,10 @@ impl FieldDiff {
         match self.rate {
             Some(rate) => {
                 let rate_str = match self.diff_type {
-                    DiffType::RateCount => format!("{:.2}/s", rate),
-                    DiffType::RateMicrosec => format!("{:.2}s/s", rate),
-                    DiffType::MemoryGrowth => format!("{:.2}MB/s", rate),
-                    DiffType::PercentageChange => format!("{:+.2}%", rate),
+                    DiffType::RateCount => format!("{:.1}/s", rate),
+                    DiffType::RateMicrosec => format!("{:.1}s/s", rate),
+                    DiffType::MemoryGrowth => format!("{:.0}MB/s", rate),
+                    DiffType::PercentageChange => format!("{:+.1}%", rate),
                     DiffType::None => String::new(),
                 };
                 format!("{} ({})", new_formatted, rate_str)
@@ -372,7 +372,7 @@ pub fn print_snapshot_diff(diff: &SnapshotDiff, fields: &[InfoFieldType]) {
 
     for field_diff in &diff.fields {
         // Find field definition
-        let field_def = fields.iter().find(|f| {
+        let _field_def = fields.iter().find(|f| {
             let key = format!(
                 "{}{}",
                 f.name,
@@ -559,6 +559,244 @@ pub fn print_per_node_diff_all(diff: &SnapshotDiff) {
     println!();
 }
 
+/// Print per-node diff in matrix format (nodes as columns, like C code)
+///
+/// Format:
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────────────┐
+/// │                        CLUSTER STATISTICS DELTA                                  │
+/// ├─────────────────────────────────────────────────────────────────────────────────┤
+/// │ Time Interval: 5.23 sec | Nodes: 3                                              │
+/// └─────────────────────────────────────────────────────────────────────────────────┘
+///
+/// │ METRIC              │ CLUSTER │       │  1-1-P  │       │     │  1-2-R  │       │     │
+/// │                     │   Δ     │  /s   │    Δ    │  /s   │  %  │    Δ    │  /s   │  %  │
+/// ├─────────────────────┼─────────┼───────┼─────────┼───────┼─────┼─────────┼───────┼─────┤
+/// │ search_requests     │  +1000  │  190  │   +250  │   48  │ 25  │   +250  │   48  │ 25  │
+/// ```
+///
+/// Node headers show shard-based names (e.g., "1-1-P" = Shard 1, Index 1, Primary)
+/// when topology is provided, otherwise falls back to truncated IP addresses.
+pub fn print_per_node_matrix(diff: &SnapshotDiff, topology: Option<&crate::cluster::ClusterTopology>) {
+    use tabled::{
+        builder::Builder,
+        settings::{
+            Style, Alignment, Modify, Span,
+            object::{Columns, Cell, Rows},
+            themes::BorderCorrection,
+        },
+    };
+    
+    let elapsed_secs = diff.elapsed_secs;
+    if elapsed_secs <= 0.0 {
+        return;
+    }
+
+    // Collect fields that have per-node data with non-zero deltas
+    let fields_with_nodes: Vec<&FieldDiff> = diff
+        .fields
+        .iter()
+        .filter(|f| {
+            if let Some(ref deltas) = f.per_node_deltas {
+                deltas.iter().any(|(_, _, _, d)| *d != 0)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    if fields_with_nodes.is_empty() {
+        return;
+    }
+
+    // Collect unique node IDs from all fields (preserving order)
+    let mut node_ids: Vec<String> = Vec::new();
+    for field in &fields_with_nodes {
+        if let Some(ref deltas) = field.per_node_deltas {
+            for (node_id, _, _, _) in deltas {
+                if !node_ids.contains(node_id) {
+                    node_ids.push(node_id.clone());
+                }
+            }
+        }
+    }
+
+    if node_ids.is_empty() {
+        return;
+    }
+
+    // Sort node IDs by shard info if topology is available
+    if let Some(topo) = topology {
+        node_ids.sort_by(|a, b| {
+            let node_a = topo.get_node_by_address(
+                a.rsplit_once(':').map(|(h, _)| h).unwrap_or(a),
+                a.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(0)
+            );
+            let node_b = topo.get_node_by_address(
+                b.rsplit_once(':').map(|(h, _)| h).unwrap_or(b),
+                b.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(0)
+            );
+            match (node_a, node_b) {
+                (Some(a), Some(b)) => {
+                    // Sort by shard_id, then by shard_index
+                    let shard_cmp = a.shard_id.cmp(&b.shard_id);
+                    if shard_cmp == std::cmp::Ordering::Equal {
+                        a.shard_index.cmp(&b.shard_index)
+                    } else {
+                        shard_cmp
+                    }
+                }
+                _ => a.cmp(b)
+            }
+        });
+    }
+
+    // Generate node display names using topology
+    let node_names: Vec<String> = node_ids
+        .iter()
+        .map(|id| {
+            if let Some(topo) = topology {
+                topo.get_node_display_name(id)
+            } else {
+                crate::cluster::truncate_node_address(id)
+            }
+        })
+        .collect();
+
+    // Print title
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════════════════╗");
+    println!("║                        CLUSTER STATISTICS DELTA                              ║");
+    println!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    println!("║ Time Interval: {:6.2} sec | Nodes: {:3}                                       ║", elapsed_secs, node_ids.len());
+    println!("╚══════════════════════════════════════════════════════════════════════════════╝");
+
+    // Build table using Builder
+    let mut builder = Builder::default();
+
+    // Row 0: Main header with node names (will span 3 columns each)
+    let mut header1: Vec<String> = vec!["METRIC".to_string(), "CLUSTER".to_string(), "".to_string()];
+    for name in &node_names {
+        header1.push(name.clone());
+        header1.push("".to_string());
+        header1.push("".to_string());
+    }
+    builder.push_record(header1);
+
+    // Row 1: Sub-header with Δ, /s, % labels
+    let mut header2: Vec<String> = vec!["".to_string(), "Δ".to_string(), "/s".to_string()];
+    for _ in &node_ids {
+        header2.push("Δ".to_string());
+        header2.push("/s".to_string());
+        header2.push("%".to_string());
+    }
+    builder.push_record(header2);
+
+    // Build data rows
+    for field in &fields_with_nodes {
+        if let Some(ref node_deltas) = field.per_node_deltas {
+            // Skip if all deltas are zero
+            if node_deltas.iter().all(|(_, _, _, d)| *d == 0) {
+                continue;
+            }
+
+            let total_delta: i64 = node_deltas.iter().map(|(_, _, _, d)| *d).sum();
+            let total_rate = total_delta as f64 / elapsed_secs;
+
+            // Build node delta map
+            let node_delta_map: std::collections::HashMap<&str, (i64, i64, i64)> = node_deltas
+                .iter()
+                .map(|(id, old, new, delta)| (id.as_str(), (*old, *new, *delta)))
+                .collect();
+
+            // Build row
+            let mut row: Vec<String> = vec![
+                field.field_name.clone(),
+                format_rate(total_delta as f64),
+                format_rate(total_rate),
+            ];
+
+            // Add per-node values
+            for node_id in &node_ids {
+                if let Some((_, _, delta)) = node_delta_map.get(node_id.as_str()) {
+                    let rate = *delta as f64 / elapsed_secs;
+                    let share = if total_delta != 0 {
+                        (*delta as f64 / total_delta as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    if *delta != 0 {
+                        row.push(format_rate(*delta as f64));
+                        row.push(format_rate(rate));
+                        row.push(format!("{:.0}", share));
+                    } else {
+                        row.push("-".to_string());
+                        row.push("-".to_string());
+                        row.push("-".to_string());
+                    }
+                } else {
+                    row.push("-".to_string());
+                    row.push("-".to_string());
+                    row.push("-".to_string());
+                }
+            }
+
+            builder.push_record(row);
+        }
+    }
+
+    let mut table = builder.build();
+    
+    // Apply column spans FIRST (before styling)
+    // CLUSTER spans columns 1-2 (row 0)
+    table.with(Modify::new(Cell::new(0, 1)).with(Span::column(2)));
+    
+    // Each node name spans 3 columns starting at column 3, 6, 9, etc.
+    for (i, _) in node_ids.iter().enumerate() {
+        let col = 3 + i * 3;
+        table.with(Modify::new(Cell::new(0, col)).with(Span::column(3)));
+    }
+
+    // Apply styling after spans
+    table
+        .with(Style::sharp())
+        .with(BorderCorrection::span());  // Fix borders after spanning
+    
+    // Alignment: 
+    // - First column (metric names) always left-aligned
+    // - Node name headers centered
+    // - Sub-headers (Δ, /s, %) centered  
+    // - Data values right-aligned
+    table.with(Modify::new(Columns::first()).with(Alignment::left()));
+    table.with(Modify::new(Columns::new(1..)).with(Alignment::right()));
+    // Center the header rows (node names and sub-column labels)
+    for col in 1..(3 + node_ids.len() * 3) {
+        table.with(Modify::new(Cell::new(0, col)).with(Alignment::center()));
+        table.with(Modify::new(Cell::new(1, col)).with(Alignment::center()));
+    }
+
+    println!("{}", table);
+    println!();
+}
+
+/// Format rate value with compact notation
+fn format_rate(rate: f64) -> String {
+    let abs_rate = rate.abs();
+    if abs_rate >= 1_000_000_000.0 {
+        format!("{:.0}G", rate / 1_000_000_000.0)
+    } else if abs_rate >= 1_000_000.0 {
+        format!("{:.0}M", rate / 1_000_000.0)
+    } else if abs_rate >= 10_000.0 {
+        format!("{:.0}K", rate / 1_000.0)
+    } else if abs_rate >= 100.0 {
+        format!("{:.0}", rate)
+    } else if abs_rate >= 10.0 {
+        format!("{:.1}", rate)
+    } else {
+        format!("{:.2}", rate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,5 +865,54 @@ mod tests {
         assert_eq!(snapshot.get_value("primary_only"), Some(100));
         // all_nodes should have sum from both
         assert_eq!(snapshot.get_value("all_nodes"), Some(100));
+    }
+
+    #[test]
+    fn test_per_node_matrix_formatting() {
+        // Create fields with per-node tracking
+        let fields = vec![
+            InfoFieldType::new("search_requests")
+                .aggregate(AggregationType::Sum)
+                .diff(DiffType::RateCount),
+            InfoFieldType::new("search_cpu_time")
+                .aggregate(AggregationType::Sum)
+                .diff(DiffType::RateCount),
+            InfoFieldType::new("search_index_scans")
+                .aggregate(AggregationType::Sum)
+                .diff(DiffType::RateCount),
+        ];
+
+        // Create "before" snapshot with 3 nodes
+        let mut builder1 = SnapshotBuilder::new("before", fields.clone());
+        builder1.add_node("192.168.1.10:6379", true, "search_requests:1000\nsearch_cpu_time:500\nsearch_index_scans:2000\n");
+        builder1.add_node("192.168.1.11:6379", true, "search_requests:800\nsearch_cpu_time:400\nsearch_index_scans:1600\n");
+        builder1.add_node("192.168.1.12:6379", true, "search_requests:1200\nsearch_cpu_time:600\nsearch_index_scans:2400\n");
+        let snap1 = builder1.build();
+
+        // Create "after" snapshot (simulating 5 seconds of activity)
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut builder2 = SnapshotBuilder::new("after", fields.clone());
+        builder2.add_node("192.168.1.10:6379", true, "search_requests:1500\nsearch_cpu_time:750\nsearch_index_scans:3000\n");
+        builder2.add_node("192.168.1.11:6379", true, "search_requests:1200\nsearch_cpu_time:600\nsearch_index_scans:2400\n");
+        builder2.add_node("192.168.1.12:6379", true, "search_requests:2000\nsearch_cpu_time:1000\nsearch_index_scans:4000\n");
+        let snap2 = builder2.build();
+
+        let diff = compare_snapshots(&snap1, &snap2, &fields);
+
+        // Print the matrix - this will show in test output with --nocapture
+        println!("\n=== Test: Per-Node Matrix Formatting ===");
+        print_per_node_matrix(&diff, None);
+
+        // Verify the diff contains expected values
+        assert_eq!(diff.fields.len(), 3);
+        
+        // Total deltas should be: requests=1700, cpu_time=850, index_scans=3400
+        let requests_diff = diff.fields.iter().find(|f| f.field_name == "search_requests").unwrap();
+        assert_eq!(requests_diff.delta, 1700);
+        
+        // Check per-node deltas exist
+        assert!(requests_diff.per_node_deltas.is_some());
+        let per_node = requests_diff.per_node_deltas.as_ref().unwrap();
+        assert_eq!(per_node.len(), 3);
     }
 }

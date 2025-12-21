@@ -33,6 +33,6 @@ pub use info_fields::{
 pub use node_metrics::NodeMetrics;
 pub use reporter::MetricsReporter;
 pub use snapshot::{
-    compare_snapshots, print_per_node_diff, print_per_node_diff_all, print_snapshot_diff,
-    ClusterSnapshot, FieldDiff, SnapshotBuilder, SnapshotDiff,
+    compare_snapshots, print_per_node_diff, print_per_node_diff_all, print_per_node_matrix,
+    print_snapshot_diff, ClusterSnapshot, FieldDiff, SnapshotBuilder, SnapshotDiff,
 };

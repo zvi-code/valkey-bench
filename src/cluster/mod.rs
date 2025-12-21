@@ -21,5 +21,5 @@ pub use cluster_tag_map::{
 };
 pub use node::ClusterNode;
 pub use protected_ids::ProtectedVectorIds;
-pub use topology::ClusterTopology;
+pub use topology::{truncate_node_address, ClusterTopology};
 pub use topology_manager::{RedirectInfo, TopologyManager};
