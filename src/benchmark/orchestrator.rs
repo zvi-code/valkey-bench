@@ -19,12 +19,40 @@ use crate::cluster::{
 };
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
+use crate::metrics::info_fields::default_info_fields;
 use crate::metrics::reporter::{BenchmarkResults, OutputFormat};
+use crate::metrics::snapshot::{ClusterSnapshot, SnapshotBuilder};
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
     create_index, create_template, drop_index, get_index_info, WorkloadType,
 };
+
+/// Keyspace hit/miss statistics from INFO stats
+#[derive(Debug, Clone, Default)]
+pub struct KeyspaceStats {
+    /// Total keyspace hits during the benchmark
+    pub hits: u64,
+    /// Total keyspace misses during the benchmark
+    pub misses: u64,
+}
+
+impl KeyspaceStats {
+    /// Calculate hit rate as a percentage (0.0 to 1.0)
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// Check if any hits or misses were recorded
+    pub fn has_data(&self) -> bool {
+        self.hits > 0 || self.misses > 0
+    }
+}
 
 /// Benchmark result summary
 pub struct BenchmarkResult {
@@ -44,6 +72,8 @@ pub struct BenchmarkResult {
     pub error_count: u64,
     /// Per-node metrics snapshots
     pub node_metrics: Vec<crate::metrics::node_metrics::NodeMetricsSnapshot>,
+    /// Keyspace hit/miss statistics
+    pub keyspace_stats: KeyspaceStats,
 }
 
 impl BenchmarkResult {
@@ -83,6 +113,12 @@ impl BenchmarkResult {
             // Debug: show if recall wasn't computed
             println!("\n(Recall not computed - requires dataset with ground truth)");
         }
+
+        // Always show keyspace hit/miss stats
+        println!("\nKeyspace:");
+        println!("  hits: {}", self.keyspace_stats.hits);
+        println!("  misses: {}", self.keyspace_stats.misses);
+        println!("  hit rate: {:.2}%", self.keyspace_stats.hit_rate() * 100.0);
     }
 }
 
@@ -140,6 +176,56 @@ impl Orchestrator {
         })
     }
 
+    /// Create orchestrator with an existing cluster topology (skips discovery)
+    ///
+    /// This is useful for optimization iterations where we don't want to
+    /// rediscover the cluster topology on each iteration (saves connections).
+    pub fn with_topology(config: BenchmarkConfig, topology: Option<ClusterTopology>) -> Result<Self> {
+        let connection_factory = ConnectionFactory {
+            connect_timeout: Duration::from_millis(config.connect_timeout_ms),
+            read_timeout: Duration::from_millis(config.request_timeout_ms),
+            write_timeout: Duration::from_millis(config.request_timeout_ms),
+            tls_config: config.tls.clone(),
+            auth_password: config.auth.as_ref().map(|a| a.password.clone()),
+            auth_username: config.auth.as_ref().and_then(|a| a.username.clone()),
+            dbnum: config.dbnum,
+        };
+
+        // Create topology manager for dynamic updates (cluster mode only)
+        let topology_manager = topology.as_ref().map(|topo| {
+            let seed_addresses: Vec<(String, u16)> = config
+                .addresses
+                .iter()
+                .map(|a| (a.host.clone(), a.port))
+                .collect();
+
+            Arc::new(TopologyManager::new(
+                topo.clone(),
+                connection_factory.clone(),
+                seed_addresses,
+            ))
+        });
+
+        Ok(Self {
+            config: Arc::new(config),
+            connection_factory,
+            dataset: None,
+            cluster_topology: topology,
+            topology_manager,
+            cluster_tag_map: None,
+        })
+    }
+
+    /// Get the cluster topology (for sharing across orchestrators)
+    pub fn cluster_topology(&self) -> Option<&ClusterTopology> {
+        self.cluster_topology.as_ref()
+    }
+
+    /// Set an existing cluster tag map (for sharing across optimization iterations)
+    pub fn set_cluster_tag_map(&mut self, tag_map: Arc<ClusterTagMap>) {
+        self.cluster_tag_map = Some(tag_map);
+    }
+
     /// Discover cluster topology by connecting to seed node
     fn discover_cluster(
         config: &BenchmarkConfig,
@@ -166,15 +252,17 @@ impl Orchestrator {
                         }
                     ))?;
 
-                info!(
-                    "Discovered cluster with {} primaries, {} total nodes",
-                    topology.num_primaries(),
-                    topology.num_nodes()
-                );
+                if !config.quiet {
+                    info!(
+                        "Discovered cluster with {} primaries, {} total nodes",
+                        topology.num_primaries(),
+                        topology.num_nodes()
+                    );
 
-                // Log primary addresses
-                for primary in topology.primaries() {
-                    info!("  Primary: {}:{} (slots: {})", primary.host, primary.port, primary.slots.len());
+                    // Log primary addresses
+                    for primary in topology.primaries() {
+                        info!("  Primary: {}:{} (slots: {})", primary.host, primary.port, primary.slots.len());
+                    }
                 }
 
                 Ok(Some(topology))
@@ -194,7 +282,9 @@ impl Orchestrator {
                         }
                     ));
                 }
-                info!("Running in standalone mode (CLUSTER NODES not available)");
+                if !config.quiet {
+                    info!("Running in standalone mode (CLUSTER NODES not available)");
+                }
                 Ok(None)
             }
         }
@@ -224,6 +314,57 @@ impl Orchestrator {
         self.dataset = Some(Arc::new(dataset));
     }
 
+    /// Set dataset from Arc (for sharing across optimization iterations)
+    pub fn set_dataset_arc(&mut self, dataset: Arc<DatasetContext>) {
+        self.dataset = Some(dataset);
+    }
+
+    /// Capture a cluster snapshot of INFO stats from all nodes
+    ///
+    /// Uses the snapshot infrastructure to collect and aggregate metrics
+    /// across all cluster nodes (or standalone node).
+    fn capture_info_snapshot(&self, label: &str) -> ClusterSnapshot {
+        let addresses = self.get_benchmark_addresses();
+        let fields = default_info_fields();
+        let mut builder = SnapshotBuilder::new(label, fields);
+
+        for (host, port) in addresses {
+            let node_id = format!("{}:{}", host, port);
+            // Determine if this is a primary node
+            let is_primary = if let Some(ref topology) = self.cluster_topology {
+                topology.primaries().any(|p| p.host == host && p.port == port)
+            } else {
+                true // Standalone mode - treat as primary
+            };
+
+            match self.connection_factory.create(&host, port) {
+                Ok(mut conn) => {
+                    // Get INFO stats section (contains keyspace_hits/misses)
+                    match conn.info("stats") {
+                        Ok(info_str) => {
+                            builder.add_node(&node_id, is_primary, &info_str);
+                        }
+                        Err(_) => {
+                            // Silently ignore errors - stats capture is best-effort
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Silently ignore connection errors
+                }
+            }
+        }
+
+        builder.build()
+    }
+
+    /// Extract keyspace stats from a snapshot
+    fn keyspace_stats_from_snapshot(snapshot: &ClusterSnapshot) -> KeyspaceStats {
+        let hits = snapshot.get_value("keyspace_hits").unwrap_or(0) as u64;
+        let misses = snapshot.get_value("keyspace_misses").unwrap_or(0) as u64;
+        KeyspaceStats { hits, misses }
+    }
+
     /// Build cluster tag map by scanning cluster for existing vector keys
     ///
     /// This is used for vec-query with existing data to:
@@ -234,7 +375,9 @@ impl Orchestrator {
         let search_config = match &self.config.search_config {
             Some(cfg) => cfg,
             None => {
-                info!("No search config - skipping cluster tag map");
+                if !self.config.quiet {
+                    info!("No search config - skipping cluster tag map");
+                }
                 return Ok(());
             }
         };
@@ -248,10 +391,12 @@ impl Orchestrator {
 
         let is_cluster = self.cluster_topology.is_some();
 
-        info!(
-            "Building cluster tag map for prefix '{}' (capacity: {}, cluster: {})",
-            search_config.prefix, capacity, is_cluster
-        );
+        if !self.config.quiet {
+            info!(
+                "Building cluster tag map for prefix '{}' (capacity: {}, cluster: {})",
+                search_config.prefix, capacity, is_cluster
+            );
+        }
 
         let tag_map = Arc::new(ClusterTagMap::new(
             &search_config.prefix,
@@ -272,11 +417,13 @@ impl Orchestrator {
 
             match build_vector_id_mappings(&tag_map, &nodes, &scan_config) {
                 Ok(results) => {
-                    info!(
-                        "Cluster tag map built: {} vectors mapped from {} keys",
-                        tag_map.count(),
-                        results.total_keys
-                    );
+                    if !self.config.quiet {
+                        info!(
+                            "Cluster tag map built: {} vectors mapped from {} keys",
+                            tag_map.count(),
+                            results.total_keys
+                        );
+                    }
                 }
                 Err(e) => {
                     return Err(crate::utils::BenchmarkError::Config(format!(
@@ -286,7 +433,9 @@ impl Orchestrator {
                 }
             }
         } else {
-            info!("Standalone mode - cluster tag map will not route by node");
+            if !self.config.quiet {
+                info!("Standalone mode - cluster tag map will not route by node");
+            }
         }
 
         self.cluster_tag_map = Some(tag_map);
@@ -395,6 +544,7 @@ impl Orchestrator {
             recall_stats: merged_recall,
             error_count,
             node_metrics: Vec::new(),
+            keyspace_stats: KeyspaceStats::default(),
         })
     }
 
@@ -411,15 +561,17 @@ impl Orchestrator {
                 let requested = self.config.requests.min(dataset_size);
                 let to_load = requested.saturating_sub(already_mapped);
                 
-                if already_mapped > 0 {
+                if already_mapped > 0 && !self.config.quiet {
                     info!(
                         "Partial prefill: {} vectors already exist, {} to load (of {} requested)",
                         already_mapped, to_load, self.config.requests
                     );
                 }
-                
+
                 if to_load == 0 {
-                    info!("All {} vectors already loaded, nothing to do", already_mapped);
+                    if !self.config.quiet {
+                        info!("All {} vectors already loaded, nothing to do", already_mapped);
+                    }
                     // Return early with empty result
                     return Ok(BenchmarkResult {
                         test_name: workload.to_string(),
@@ -431,6 +583,7 @@ impl Orchestrator {
                         recall_stats: RecallStats::new(),
                         error_count: 0,
                         node_metrics: Vec::new(),
+                        keyspace_stats: KeyspaceStats::default(),
                     });
                 }
                 
@@ -484,12 +637,15 @@ impl Orchestrator {
 
         // In cluster mode, total clients = clients_per_thread * num_nodes * threads
         let total_clients = clients_per_thread * addresses.len() * self.config.threads as usize;
-        if self.cluster_topology.is_some() && total_clients != self.config.clients as usize {
+        if self.cluster_topology.is_some() && total_clients != self.config.clients as usize && !self.config.quiet {
             eprintln!(
                 "Note: Using {} total clients ({} per thread × {} nodes × {} threads)",
                 total_clients, clients_per_thread, addresses.len(), self.config.threads
             );
         }
+
+        // Capture snapshot before benchmark starts (for keyspace stats diff)
+        let snapshot_before = self.capture_info_snapshot("before");
 
         // Spawn event-driven worker threads
         let mut handles: Vec<thread::JoinHandle<EventWorkerResult>> =
@@ -526,7 +682,9 @@ impl Orchestrator {
                     ) {
                         Ok(worker) => worker.run(counters, dataset),
                         Err(e) => {
-                            eprintln!("Worker {}: Failed to create: {}", worker_id, e);
+                            if !config.quiet {
+                                eprintln!("Worker {}: Failed to create: {}", worker_id, e);
+                            }
                             EventWorkerResult {
                                 worker_id,
                                 histogram: Histogram::new_with_bounds(1, 3_600_000_000, 3)
@@ -563,11 +721,24 @@ impl Orchestrator {
 
         let duration = start_time.elapsed();
 
+        // Capture snapshot after benchmark completes
+        let snapshot_after = self.capture_info_snapshot("after");
+
         // Signal shutdown to progress reporter
         counters.signal_shutdown();
 
-        // Merge results
-        self.merge_event_results(workload.as_str(), results, duration)
+        // Calculate keyspace stats delta from snapshots
+        let stats_before = Self::keyspace_stats_from_snapshot(&snapshot_before);
+        let stats_after = Self::keyspace_stats_from_snapshot(&snapshot_after);
+
+        // Merge results and add keyspace stats
+        let mut result = self.merge_event_results(workload.as_str(), results, duration)?;
+        result.keyspace_stats = KeyspaceStats {
+            hits: stats_after.hits.saturating_sub(stats_before.hits),
+            misses: stats_after.misses.saturating_sub(stats_before.misses),
+        };
+
+        Ok(result)
     }
 
     /// Run all configured tests (uses event-driven I/O by default)
@@ -579,10 +750,14 @@ impl Orchestrator {
                 crate::utils::BenchmarkError::Config(format!("Unknown test: {}", test_name))
             })?;
 
-            println!("\nRunning test: {}", workload);
+            if !self.config.quiet {
+                println!("\nRunning test: {}", workload);
+            }
             // Use event-driven I/O for maximum performance (like C's ae)
             let result = self.run_test_event(workload)?;
-            result.print_summary();
+            if !self.config.quiet {
+                result.print_summary();
+            }
             results.push(result);
         }
 
@@ -860,6 +1035,7 @@ mod tests {
             recall_stats: RecallStats::new(),
             error_count: 0,
             node_metrics: Vec::new(),
+            keyspace_stats: KeyspaceStats::default(),
         };
 
         // p50 should be around 1ms

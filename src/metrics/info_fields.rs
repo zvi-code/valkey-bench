@@ -813,6 +813,15 @@ pub fn default_info_fields() -> Vec<InfoFieldType> {
             .display(DisplayFormat::MemoryMb)
             .diff(DiffType::None)
             .from_primary_only(),
+        // Keyspace hit/miss counters (from INFO stats)
+        InfoFieldType::new("keyspace_hits")
+            .aggregate(AggregationType::Sum)
+            .display(DisplayFormat::Integer)
+            .diff(DiffType::RateCount),
+        InfoFieldType::new("keyspace_misses")
+            .aggregate(AggregationType::Sum)
+            .display(DisplayFormat::Integer)
+            .diff(DiffType::RateCount),
         // FT.SEARCH command stats
         InfoFieldType::new("cmdstat_FT.SEARCH")
             .prefix_match()

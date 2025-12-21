@@ -475,6 +475,8 @@ pub struct EventWorker {
     pipeline: usize,
     keyspace_len: u64,
     sequential: bool,
+    /// Seed for deterministic random key generation
+    seed: u64,
     command_template: CommandBuffer,
     key_prefix: String,
     k: usize,
@@ -637,6 +639,7 @@ impl EventWorker {
             pipeline: config.pipeline as usize,
             keyspace_len: config.keyspace_len,
             sequential: config.sequential,
+            seed: config.seed,
             command_template,
             key_prefix,
             k,
@@ -755,11 +758,15 @@ impl EventWorker {
     }
 
     /// Generate next key number (sequential or random)
-    fn next_key_num(&mut self, counters: &GlobalCounters) -> u64 {
+    ///
+    /// For random mode, uses a global atomic counter with deterministic mixing
+    /// to ensure SET and GET with the same seed access the exact same keys.
+    fn next_key_num(&self, counters: &GlobalCounters) -> u64 {
         if self.sequential {
             counters.next_seq_key(self.keyspace_len)
         } else {
-            self.rng.u64(0..self.keyspace_len)
+            // Use deterministic random key generation via global counter
+            counters.next_random_key(self.seed, self.keyspace_len)
         }
     }
 
@@ -868,21 +875,54 @@ impl EventWorker {
                         write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, value, ph.len);
                     }
                     PlaceholderType::ClusterTag => {
-                        let tag = loop {
-                            let c1 = b'A' + (self.rng.u8(..) % 26);
-                            let c2 = b'A' + (self.rng.u8(..) % 26);
-                            let c3 = b'A' + (self.rng.u8(..) % 26);
-                            let candidate = [b'{', c1, c2, c3, b'}'];
-                            let slot = slot_for_tag(&candidate);
-                            if self.clients[client_idx].owns_slot(slot) {
-                                break candidate;
-                            }
-                        };
+                        // Generate deterministic cluster tag from key_num
+                        // This ensures SET and GET with same seed access same keys
+                        let tag = Self::deterministic_cluster_tag(
+                            self.seed,
+                            key_num,
+                            |slot| self.clients[client_idx].owns_slot(slot),
+                        );
                         self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
                     }
                 }
             }
         }
+    }
+
+    /// Generate a deterministic cluster tag {ABC} based on seed and key_num
+    ///
+    /// The tag is derived deterministically from the key number, ensuring that
+    /// SET and GET with the same seed produce identical keys.
+    /// We iterate through deterministic candidates until finding one that
+    /// routes to a slot owned by the client.
+    #[inline]
+    fn deterministic_cluster_tag<F>(seed: u64, key_num: u64, owns_slot: F) -> [u8; 5]
+    where
+        F: Fn(u16) -> bool,
+    {
+        // Use a simple mixing function to generate deterministic tag candidates
+        // We try different "attempts" until we find a valid slot
+        for attempt in 0u64..10000 {
+            // Mix seed, key_num, and attempt to get a deterministic value
+            let mixed = seed
+                .wrapping_add(key_num.wrapping_mul(0x9E3779B97F4A7C15))
+                .wrapping_add(attempt.wrapping_mul(0x517CC1B727220A95));
+
+            // Extract 3 characters (A-Z)
+            let c1 = b'A' + ((mixed >> 0) % 26) as u8;
+            let c2 = b'A' + ((mixed >> 8) % 26) as u8;
+            let c3 = b'A' + ((mixed >> 16) % 26) as u8;
+
+            let candidate = [b'{', c1, c2, c3, b'}'];
+            let slot = slot_for_tag(&candidate);
+
+            if owns_slot(slot) {
+                return candidate;
+            }
+        }
+
+        // Fallback (should never happen with proper slot coverage)
+        [b'{', b'A', b'A', b'A', b'}']
     }
 
     /// Apply rate limiting if configured
@@ -1106,6 +1146,14 @@ impl EventWorker {
         counters: &GlobalCounters,
         dataset: Option<&DatasetContext>,
     ) {
+        // Pre-generate key number for deterministic key and cluster tag generation
+        // This ensures SET and GET with same seed produce identical full keys
+        let key_num = if dataset.is_none() {
+            self.next_key_num(counters)
+        } else {
+            0 // Will be overwritten by vector/dataset index
+        };
+
         // Fill placeholders in write buffer
         for (cmd_idx, phs) in self.command_template.placeholders.iter().enumerate() {
             for ph in phs {
@@ -1113,14 +1161,10 @@ impl EventWorker {
                 match ph.placeholder_type {
                     PlaceholderType::Key => {
                         if dataset.is_some() {
-                            continue; // Set with Vector
+                            continue; // Set with Vector - key will be set by Vector handler
                         }
-                        let key = if self.sequential {
-                            counters.next_seq_key(self.keyspace_len)
-                        } else {
-                            self.rng.u64(0..self.keyspace_len)
-                        };
-                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key, ph.len);
+                        // Use pre-generated key for reproducible keyspace
+                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                     }
                     PlaceholderType::Vector => {
                         if let Some(ds) = dataset {
@@ -1176,19 +1220,13 @@ impl EventWorker {
                         write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, value, ph.len);
                     }
                     PlaceholderType::ClusterTag => {
-                        // Generate random 3-char tag like {ABC} that routes to our node
-                        // Keep generating until we find a tag whose slot is owned by this client
-                        let tag = loop {
-                            let c1 = b'A' + (self.rng.u8(..) % 26);
-                            let c2 = b'A' + (self.rng.u8(..) % 26);
-                            let c3 = b'A' + (self.rng.u8(..) % 26);
-                            let candidate = [b'{', c1, c2, c3, b'}'];
-                            let slot = slot_for_tag(&candidate);
-                            if self.clients[client_idx].owns_slot(slot) {
-                                break candidate;
-                            }
-                            // In non-cluster mode, owns_slot always returns true
-                        };
+                        // Generate deterministic cluster tag from key_num
+                        // This ensures SET and GET with same seed access same keys
+                        let tag = Self::deterministic_cluster_tag(
+                            self.seed,
+                            key_num,
+                            |slot| self.clients[client_idx].owns_slot(slot),
+                        );
                         self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
                     }
                 }

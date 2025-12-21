@@ -14,6 +14,7 @@ A high-performance benchmarking tool for Valkey/Redis, with specialized support 
 - **TLS Support**: Full TLS/SSL support with certificate authentication
 - **CLI Mode**: Interactive command-line interface (like valkey-cli)
 - **JSON Output**: Machine-readable results for CI/CD integration
+- **Parameter Optimizer**: Automatic tuning of clients, threads, pipeline, and ef_search to maximize throughput under constraints
 
 ## Supported Platforms
 
@@ -126,7 +127,7 @@ Read-from-replica strategies:
 | `-d, --data-size <BYTES>` | Data size for SET/HSET values | `3` |
 | `--rps <NUM>` | Rate limit (requests per second) | Unlimited |
 | `--sequential` | Use sequential keys instead of random | `false` |
-| `--seed <NUM>` | Random seed (0 = random) | `0` |
+| `--seed <NUM>` | Random seed for deterministic key generation | `12345` |
 
 #### CLI Mode Options
 
@@ -143,6 +144,81 @@ If no command is given, starts an interactive REPL.
 |--------|-------------|---------|
 | `-q, --quiet` | Quiet mode (no progress bar) | `false` |
 | `--json <FILE>` | Export results to JSON file | None |
+
+### Keyspace and Key Distribution
+
+The `-r` (keyspace) option controls how keys are generated for SET/GET benchmarks. Understanding key distribution is critical for proper cache hit rate testing.
+
+#### Deterministic Key Generation
+
+Keys are generated using a deterministic algorithm based on:
+- **Seed** (`--seed`): Fixed at 12345 by default for reproducibility
+- **Global atomic counter**: Ensures the same key sequence across threads
+- **SplitMix64 mixing**: Provides uniform distribution across the keyspace
+
+This means **running SET and GET with the same seed and keyspace produces identical key sequences**, enabling reproducible benchmarks.
+
+#### Random vs Sequential Mode
+
+| Mode | Key Pattern | Use Case |
+|------|-------------|----------|
+| Random (default) | Uniform random within keyspace | Realistic cache access patterns |
+| Sequential (`--sequential`) | 0, 1, 2, ... N-1 | Cache warming, 100% hit rate testing |
+
+#### Understanding Hit Rates with Random Keys
+
+**Important**: Random key distribution causes key collisions due to the birthday paradox.
+
+With N random SET operations on a keyspace of size N:
+- Only ~63% unique keys are created (not N unique keys)
+- Formula: `unique_keys = N * (1 - e^(-1)) ~ 0.632 * N`
+
+**Example**: 3M SET + 5M GET on 3M keyspace:
+- SET creates ~1.9M unique keys (63% of 3M)
+- First 3M GET requests hit the same keys as SET (100% hit rate)
+- Remaining 2M GET requests hit ~63% of the time
+- Total hit rate: (3M + 1.26M) / 5M = **85.2%**
+
+#### Achieving 100% Hit Rate
+
+Two approaches for guaranteed 100% hit rate:
+
+**Option 1: Sequential mode**
+```bash
+# SET 3M keys sequentially
+./valkey-search-benchmark -h HOST -t set -n 3000000 -r 3000000 --sequential
+
+# GET the same keys sequentially
+./valkey-search-benchmark -h HOST -t get -n 3000000 -r 3000000 --sequential
+```
+
+**Option 2: Match request counts**
+```bash
+# SET with 3M requests
+./valkey-search-benchmark -h HOST -t set -n 3000000 -r 3000000 -d 500
+
+# GET with same count (first 3M keys match SET exactly)
+./valkey-search-benchmark -h HOST -t get -n 3000000 -r 3000000
+```
+
+#### Benchmark Examples for Maximum Throughput
+
+```bash
+# Step 1: Clear the database
+./valkey-search-benchmark --cli -h HOST FLUSHALL
+
+# Step 2: SET 3M keys with 500 byte values
+./valkey-search-benchmark -h HOST --cluster --rfr no -t set \
+  -n 3000000 -r 3000000 -d 500 -c 200 --threads 16 -P 100
+
+# Step 3: GET the same 3M keys (100% hit rate guaranteed)
+./valkey-search-benchmark -h HOST --cluster --rfr no -t get \
+  -n 3000000 -r 3000000 -c 200 --threads 16 -P 100
+
+# Alternative: More GET requests (will show 85% hit rate due to collisions)
+./valkey-search-benchmark -h HOST --cluster --rfr no -t get \
+  -n 5000000 -r 3000000 -c 200 --threads 16 -P 100
+```
 
 ### Workload Types
 
@@ -304,6 +380,142 @@ Execute commands directly by appending them after the connection options:
 
 # With authentication
 ./valkey-search-benchmark --cli -h localhost -a mypassword INFO server
+```
+
+## Parameter Optimization
+
+The optimizer automatically finds optimal parameter configurations by exploring the parameter space and converging on the best settings for your objective.
+
+### Optimizer Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--optimize` | Enable optimization mode | `false` |
+| `--objective <OBJ>` | Optimization goal(s), comma-separated | `maximize:qps` |
+| `--tolerance <N>` | Equivalence tolerance for multi-goal (0.04 = 4%) | `0.04` |
+| `--constraint <CONS>` | Add constraint (repeatable) | None |
+| `--tune <PARAM>` | Parameter to tune (repeatable) | None |
+| `--max-optimize-iterations <N>` | Maximum iterations | `50` |
+
+### Objective Format
+
+Single objective: `<direction>:<metric>` where:
+- Direction: `maximize` or `minimize`
+- Metrics: `qps`, `recall`, `p50_ms`, `p95_ms`, `p99_ms`, `p999_ms`, `mean_latency_ms`, `error_rate`
+
+Multi-objective (ordered goals): `<goal1>,<goal2>,...`
+- Goals are evaluated in order; configs within tolerance on goal N are compared by goal N+1
+- Example: `maximize:qps,minimize:p99_ms` - maximize QPS, tiebreak on lowest p99
+
+Bounded objective: `<direction>:<metric>:<op>:<value>`
+- Find best value that also satisfies the bound
+- Example: `maximize:qps:lt:1000000` - maximize QPS but must be < 1M req/s
+
+### Constraint Format
+
+`<metric>:<operator>:<value>` where:
+- Operators: `gt` (>), `gte` (>=), `lt` (<), `lte` (<=), `eq` (=)
+- Examples: `recall:gt:0.95`, `p99_ms:lt:0.1`, `qps:gte:100000`
+
+### Parameter Format
+
+`<name>:<min>:<max>:<step>` where:
+- Names: `clients`, `threads`, `pipeline`, `ef_search`
+- Examples: `clients:10:300:10`, `threads:1:32:1`, `ef_search:10:500:10`
+
+### How It Works
+
+The optimizer uses a three-phase approach:
+
+1. **Feasibility Phase**: Tests maximum parameter values to establish an upper bound
+2. **Exploration Phase**: Grid sampling with boundary values (min, 25%, 50%, 75%, max) to understand the parameter space
+3. **Exploitation Phase**: Hill climbing with multiple step sizes (1x, 2x, 3x) in all directions to find the optimum
+
+**Adaptive Duration**: Uses shorter runs (100K requests) during exploration and longer runs (500K requests) during exploitation for accuracy.
+
+### Optimization Examples
+
+```bash
+# Maximize QPS for GET workload, tune clients and threads
+./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+  --optimize --objective "maximize:qps" \
+  --tune "clients:10:300:10" --tune "threads:1:32:1"
+
+# Maximize QPS with p99 latency under 1ms
+./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+  --optimize --objective "maximize:qps" --constraint "p99_ms:lt:1.0" \
+  --tune "clients:10:200:10" --tune "threads:1:16:1"
+
+# Multi-objective: maximize QPS, tiebreak on lowest p99 (4% tolerance)
+./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+  --optimize --objective "maximize:qps,minimize:p99_ms" --tolerance 0.04 \
+  --tune "clients:10:300:10" --tune "threads:1:32:1"
+
+# Vector search: maximize QPS with recall above 95%
+./valkey-search-benchmark -h cluster-node --cluster -t vec-query \
+  --dataset vectors.bin --index-name idx -n 100000 \
+  --optimize --objective "maximize:qps" --constraint "recall:gt:0.95" \
+  --tune "ef_search:10:500:10" --tune "clients:10:100:10"
+
+# Bounded objective: maximize QPS but must stay under 1M req/s
+./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+  --optimize --objective "maximize:qps:lt:1000000" \
+  --tune "clients:10:200:10"
+
+# Minimize p99 latency while maintaining minimum throughput
+./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+  --optimize --objective "minimize:p99_ms" --constraint "qps:gte:500000" \
+  --tune "clients:10:200:10" --tune "pipeline:1:20:1"
+```
+
+### Optimizer Output
+
+The optimizer prints one line per iteration for compact progress tracking:
+
+```
+=== OPTIMIZATION MODE ===
+
+Objectives: maximize:qps, minimize:p99_ms
+  Tolerance: 4.0% (configs within this range compared by secondary goals)
+Constraints:
+  - p99_ms < 1.0
+Parameters to tune:
+  - clients: 10 to 300 step 10
+  - threads: 1 to 32 step 1
+Max iterations: 50
+Adaptive duration: 100K requests (exploration) -> 500K (exploitation)
+
+[ 1] Feasibility | {clients=300, threads=32} | 892K req/s p99=0.52ms *BEST*
+[ 2] Exploration | {clients=10, threads=1} | 245K req/s p99=0.12ms
+[ 3] Exploration | {clients=10, threads=32} | 456K req/s p99=0.34ms
+... (more iterations)
+[25] Exploitation | {clients=275, threads=24} | 1.04M req/s p99=0.41ms *BEST*
+
+=== Optimization Summary ===
+
+Objectives: maximize:qps, minimize:p99_ms
+  (tolerance: 4.0% - configs within this range are compared by secondary goals)
+Constraints:
+  - p99_ms < 1.0
+Status: Converged (completed all phases)
+
+=== Best Configuration ===
+Config: {clients=275, threads=24}
+qps: 1041234.5600
+
+=== Recommended Command Line ===
+
+./valkey-search-benchmark -h cluster-node --cluster -t get -c 275 --threads 24 -n 1000000
+
+Expected performance: 1.04M req/sec, p99=0.41ms
+```
+
+If the optimizer hits the iteration limit without converging:
+
+```
+!!! OPTIMIZATION DID NOT CONVERGE !!!
+The iteration limit (50) was reached before completing all phases.
+The best result found may not be optimal.
 ```
 
 ## Vector Search Benchmarking

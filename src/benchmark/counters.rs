@@ -20,6 +20,10 @@ pub struct GlobalCounters {
     /// Sequential key counter (for --sequential mode)
     pub seq_key_counter: AtomicU64,
 
+    /// Random key counter (for deterministic random key generation)
+    /// Each call returns a unique index that maps deterministically to a key
+    pub random_key_counter: AtomicU64,
+
     /// Dataset vector counter (for unique vector insertion)
     pub dataset_counter: AtomicU64,
 
@@ -49,6 +53,7 @@ impl GlobalCounters {
             requests_issued: AtomicU64::new(0),
             requests_finished: AtomicU64::new(0),
             seq_key_counter: AtomicU64::new(0),
+            random_key_counter: AtomicU64::new(0),
             dataset_counter: AtomicU64::new(0),
             query_counter: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
@@ -65,6 +70,7 @@ impl GlobalCounters {
             requests_issued: AtomicU64::new(0),
             requests_finished: AtomicU64::new(0),
             seq_key_counter: AtomicU64::new(0),
+            random_key_counter: AtomicU64::new(0),
             dataset_counter: AtomicU64::new(0),
             query_counter: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
@@ -81,6 +87,7 @@ impl GlobalCounters {
             requests_issued: AtomicU64::new(0),
             requests_finished: AtomicU64::new(0),
             seq_key_counter: AtomicU64::new(0),
+            random_key_counter: AtomicU64::new(0),
             dataset_counter: AtomicU64::new(0),
             query_counter: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
@@ -182,6 +189,37 @@ impl GlobalCounters {
     #[inline]
     pub fn next_seq_key(&self, keyspace: u64) -> u64 {
         self.seq_key_counter.fetch_add(1, Ordering::Relaxed) % keyspace
+    }
+
+    /// Get next random key deterministically
+    ///
+    /// Uses an atomic counter combined with the seed to produce a deterministic
+    /// sequence of "random" keys. This ensures that SET and GET with the same
+    /// seed and keyspace access the exact same keys, regardless of thread count
+    /// or scheduling.
+    ///
+    /// The mixing function uses SplitMix64-style mixing to produce good
+    /// distribution across the keyspace.
+    #[inline]
+    pub fn next_random_key(&self, seed: u64, keyspace: u64) -> u64 {
+        let index = self.random_key_counter.fetch_add(1, Ordering::Relaxed);
+        Self::mix_key(seed, index, keyspace)
+    }
+
+    /// Deterministically map (seed, index) to a key in [0, keyspace)
+    ///
+    /// Uses SplitMix64 mixing for good distribution.
+    #[inline]
+    fn mix_key(seed: u64, index: u64, keyspace: u64) -> u64 {
+        // Combine seed and index
+        let mut x = seed.wrapping_add(index.wrapping_mul(0x9E3779B97F4A7C15));
+
+        // SplitMix64 mixing steps
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+        x = x ^ (x >> 31);
+
+        x % keyspace
     }
 
     /// Claim next dataset index for vector insertion

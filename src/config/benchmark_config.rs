@@ -75,10 +75,11 @@ pub struct BenchmarkConfig {
 
     // Optimizer
     pub optimize: bool,
-    pub target_recall: f64,
-    pub target_qps: Option<u64>,
-    pub target_p99_ms: Option<u64>,
-    pub max_ef_search: u32,
+    pub optimize_objective: String,
+    pub optimize_tolerance: f64,
+    pub optimize_constraints: Vec<String>,
+    pub optimize_parameters: Vec<String>,
+    pub max_optimize_iterations: u32,
 
     // Output
     pub output_path: Option<PathBuf>,
@@ -192,10 +193,11 @@ impl BenchmarkConfig {
             vector_offset: args.vector_offset,
 
             optimize: args.optimize,
-            target_recall: args.target_recall,
-            target_qps: args.target_qps,
-            target_p99_ms: args.target_p99_ms,
-            max_ef_search: args.max_ef_search,
+            optimize_objective: args.optimize_objective.clone(),
+            optimize_tolerance: args.optimize_tolerance,
+            optimize_constraints: args.optimize_constraints.clone(),
+            optimize_parameters: args.optimize_parameters.clone(),
+            max_optimize_iterations: args.max_optimize_iterations,
 
             output_path: args.output.clone(),
             output_format: args.output_format,

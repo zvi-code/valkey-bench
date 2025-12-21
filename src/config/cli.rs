@@ -210,21 +210,35 @@ pub struct CliArgs {
     #[arg(long = "optimize")]
     pub optimize: bool,
 
-    /// Target recall for optimizer (0.0 - 1.0)
-    #[arg(long = "target-recall", default_value_t = 0.95)]
-    pub target_recall: f64,
+    /// Optimization objective(s). Multiple goals separated by comma.
+    /// Format: "direction:metric[:op:value]" where direction is maximize/minimize.
+    /// Examples:
+    ///   "maximize:qps" - maximize QPS
+    ///   "maximize:qps,minimize:p99_ms" - max QPS, tiebreak on lowest p99
+    ///   "maximize:qps:lt:1000000" - max QPS but must be < 1M (bounded)
+    #[arg(long = "objective", default_value = "maximize:qps")]
+    pub optimize_objective: String,
 
-    /// Target QPS for optimizer
-    #[arg(long = "target-qps")]
-    pub target_qps: Option<u64>,
+    /// Tolerance for multi-objective equivalence (0.04 = 4%).
+    /// Configs within tolerance on primary goal are compared by secondary goals.
+    #[arg(long = "tolerance", default_value_t = 0.04)]
+    pub optimize_tolerance: f64,
 
-    /// Target p99 latency in milliseconds
-    #[arg(long = "target-p99")]
-    pub target_p99_ms: Option<u64>,
+    /// Constraint for optimization (can be repeated). Format: "metric:op:value"
+    /// Examples: "recall:gt:0.95", "p99_ms:lt:0.1", "qps:gte:100000"
+    /// Valid metrics: qps, recall, p50_ms, p95_ms, p99_ms, p999_ms, mean_latency_ms, error_rate
+    /// Valid operators: gt, gte, lt, lte, eq
+    #[arg(long = "constraint", action = clap::ArgAction::Append)]
+    pub optimize_constraints: Vec<String>,
 
-    /// Maximum ef_search to try
-    #[arg(long = "max-ef-search", default_value_t = 4096)]
-    pub max_ef_search: u32,
+    /// Parameter to tune (can be repeated). Format: "param:min:max:step"
+    /// Examples: "clients:10:200:10", "threads:1:16:1", "ef_search:10:500:10", "pipeline:1:20:1"
+    #[arg(long = "tune", action = clap::ArgAction::Append)]
+    pub optimize_parameters: Vec<String>,
+
+    /// Maximum optimization iterations
+    #[arg(long = "max-optimize-iterations", default_value_t = 50)]
+    pub max_optimize_iterations: u32,
 
     // ===== Output Options =====
     /// Output file path
@@ -277,8 +291,8 @@ pub struct CliArgs {
     #[arg(long = "warmup", default_value_t = 0)]
     pub warmup_requests: u64,
 
-    /// Seed for random number generation (0 = random seed)
-    #[arg(long = "seed", default_value_t = 0)]
+    /// Seed for random number generation (0 = random seed each run)
+    #[arg(long = "seed", default_value_t = 12345)]
     pub seed: u64,
 }
 
@@ -384,11 +398,6 @@ impl CliArgs {
             if needs_dataset && self.dataset.is_none() {
                 return Err("Vector search tests require --dataset".to_string());
             }
-        }
-
-        // Target recall must be in valid range
-        if !(0.0..=1.0).contains(&self.target_recall) {
-            return Err("--target-recall must be between 0.0 and 1.0".to_string());
         }
 
         // Keyspace length for random keys
