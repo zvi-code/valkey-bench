@@ -110,6 +110,30 @@ impl CommandTemplate {
         self
     }
 
+    /// Add tag field placeholder (variable length, padded with commas)
+    ///
+    /// Tags are stored as comma-separated values. The placeholder is
+    /// padded to max_len with trailing commas for fixed-size templates.
+    pub fn arg_tag_placeholder(mut self, max_len: usize) -> Self {
+        self.args.push(TemplateArg::Placeholder {
+            ph_type: PlaceholderType::Tag,
+            len: max_len,
+        });
+        self
+    }
+
+    /// Add numeric field placeholder (fixed-width decimal)
+    ///
+    /// Used for numeric attributes like timestamps or scores.
+    /// Format: 12-digit decimal number.
+    pub fn arg_numeric_placeholder(mut self) -> Self {
+        self.args.push(TemplateArg::Placeholder {
+            ph_type: PlaceholderType::Numeric,
+            len: 12, // Fixed 12-digit width for numeric values
+        });
+        self
+    }
+
     /// Add prefixed key placeholder (prefix + fixed-width decimal in single arg)
     /// The key will be: prefix + 0-padded decimal number
     pub fn arg_prefixed_key(mut self, prefix: &str, width: usize) -> Self {

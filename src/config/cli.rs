@@ -183,6 +183,29 @@ pub struct CliArgs {
     #[arg(long = "nocontent")]
     pub nocontent: bool,
 
+    // ===== Tag and Attribute Options =====
+    /// Tag field name in hash (for filtered search)
+    #[arg(long = "tag-field")]
+    pub tag_field: Option<String>,
+
+    /// Tag distribution for vec-load. Format: "tag1:prob1,tag2:prob2,..."
+    /// Each tag has independent probability (0-100) of being included.
+    /// Use __rand_int__ for random numbers. Example: "electronics:50,clothing:30,id__rand_int__:10"
+    #[arg(long = "search-tags")]
+    pub search_tags: Option<String>,
+
+    /// Tag filter for vec-query (FT.SEARCH). Example: "electronics|clothing"
+    #[arg(long = "tag-filter")]
+    pub tag_filter: Option<String>,
+
+    /// Maximum tag field payload length (for fixed-size templates)
+    #[arg(long = "tag-max-len", default_value_t = 128)]
+    pub tag_max_len: usize,
+
+    /// Numeric field name in hash (for filtered search)
+    #[arg(long = "numeric-field")]
+    pub numeric_field: Option<String>,
+
     // ===== Dataset Options =====
     /// Path to binary dataset file
     #[arg(long = "dataset")]

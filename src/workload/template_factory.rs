@@ -80,7 +80,7 @@ pub fn create_template(
         // === Vector search commands (always use cluster tags) ===
         WorkloadType::VecLoad => {
             let sc = search_config.expect("VecLoad requires search config");
-            create_vec_load_template(&sc.prefix, key_width, &sc.vector_field, sc.vec_byte_len())
+            create_vec_load_template(sc, key_width)
         }
 
         WorkloadType::VecQuery => {
@@ -98,7 +98,7 @@ pub fn create_template(
 
         WorkloadType::VecUpdate => {
             let sc = search_config.expect("VecUpdate requires search config");
-            create_vec_load_template(&sc.prefix, key_width, &sc.vector_field, sc.vec_byte_len())
+            create_vec_load_template(sc, key_width)
         }
 
         WorkloadType::Custom => {
@@ -148,33 +148,61 @@ fn create_mset_template(
 
 /// Create HSET template for vector loading
 /// Key format: prefix{tag}:vector_id (e.g., "zvec_:{ABC}:000000055083")
-fn create_vec_load_template(
-    prefix: &str,
-    key_width: usize,
-    vector_field: &str,
-    vec_byte_len: usize,
-) -> CommandTemplate {
+///
+/// Fields added:
+/// - vector_field: <vector data> (always)
+/// - tag_field: <tag value> (if search_config.tag_field is set)
+/// - numeric_field: <numeric value> (if search_config.numeric_field is set)
+fn create_vec_load_template(search_config: &SearchConfig, key_width: usize) -> CommandTemplate {
     // Key format: prefix + cluster_tag + ":" + vector_id
     // We use a compound key with cluster tag for proper shard distribution
-    CommandTemplate::new("HSET")
+    let mut template = CommandTemplate::new("HSET")
         .arg_str("HSET")
-        .arg_prefixed_key_with_cluster_tag(prefix, key_width)
-        .arg_str(vector_field)
-        .arg_vector(vec_byte_len)
+        .arg_prefixed_key_with_cluster_tag(&search_config.prefix, key_width)
+        .arg_str(&search_config.vector_field)
+        .arg_vector(search_config.vec_byte_len());
+
+    // Add tag field if configured
+    if let Some(ref tag_field) = search_config.tag_field {
+        template = template
+            .arg_str(tag_field)
+            .arg_tag_placeholder(search_config.tag_max_len);
+    }
+
+    // Add numeric field if configured
+    if let Some(ref numeric_field) = search_config.numeric_field {
+        template = template
+            .arg_str(numeric_field)
+            .arg_numeric_placeholder();
+    }
+
+    template
 }
 
 /// Create FT.SEARCH template for vector queries
+///
+/// If tag_filter is set, the query changes from:
+///   "*=>[KNN $K @embedding $BLOB]"
+/// to:
+///   "@tag_field:{filter}=>[KNN $K @embedding $BLOB]"
 fn create_vec_query_template(search_config: &SearchConfig) -> CommandTemplate {
-    // Build query string: "*=>[KNN $K @embedding $BLOB]"
-    // For the template, we use a placeholder for the vector blob
-
     let mut template = CommandTemplate::new("FT.SEARCH")
         .arg_str("FT.SEARCH")
         .arg_str(&search_config.index_name);
 
+    // Build filter prefix based on tag_filter
+    let filter_prefix = if let (Some(ref tag_field), Some(ref tag_filter)) =
+        (&search_config.tag_field, &search_config.tag_filter)
+    {
+        format!("@{}:{{{}}}", tag_field, tag_filter)
+    } else {
+        "*".to_string()
+    };
+
     // Build query string based on config
     let query = format!(
-        "*=>[KNN {} @{} $BLOB{}]",
+        "{}=>[KNN {} @{} $BLOB{}]",
+        filter_prefix,
         search_config.k,
         search_config.vector_field,
         if let Some(ef) = search_config.ef_search {
@@ -248,6 +276,11 @@ mod tests {
             hnsw_m: None,
             ef_search: None,
             nocontent: false,
+            tag_field: None,
+            tag_distributions: None,
+            tag_filter: None,
+            tag_max_len: 128,
+            numeric_field: None,
         };
 
         let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config), false);

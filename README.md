@@ -9,12 +9,14 @@ A high-performance benchmarking tool for Valkey/Redis, with specialized support 
 - **Cluster Support**: Automatic topology discovery, slot routing, and MOVED/ASK handling
 - **Read-From-Replica**: Distribute read traffic across replicas for horizontal scaling
 - **Vector Search**: FT.CREATE, FT.SEARCH with recall@k computation against ground truth
+- **Filtered Search**: Tag and numeric field support with configurable distributions
 - **Multiple Workloads**: PING, GET, SET, HSET, LPUSH, RPUSH, SADD, ZADD, and vector operations
 - **Rate Limiting**: Token bucket rate limiter for controlled load testing
 - **TLS Support**: Full TLS/SSL support with certificate authentication
 - **CLI Mode**: Interactive command-line interface (like valkey-cli)
 - **JSON Output**: Machine-readable results for CI/CD integration
 - **Parameter Optimizer**: Automatic tuning of clients, threads, pipeline, and ef_search to maximize throughput under constraints
+- **Base RTT Measurement**: Measures single-client PING and GET-miss latency to establish network baseline
 
 ## Supported Platforms
 
@@ -227,13 +229,25 @@ Two approaches for guaranteed 100% hit rate:
 | `ping` | PING command |
 | `set` | SET key value |
 | `get` | GET key |
+| `incr` | INCR key |
 | `hset` | HSET key field value |
 | `lpush` | LPUSH key value |
 | `rpush` | RPUSH key value |
+| `lpop` | LPOP key |
+| `rpop` | RPOP key |
+| `lrange100` | LRANGE key 0 99 |
+| `lrange300` | LRANGE key 0 299 |
+| `lrange500` | LRANGE key 0 499 |
+| `lrange600` | LRANGE key 0 599 |
 | `sadd` | SADD key member |
+| `spop` | SPOP key |
 | `zadd` | ZADD key score member |
-| `vec-load` | HSET with vector data (requires dataset) |
-| `vec-query` | FT.SEARCH vector query (requires dataset and index) |
+| `zpopmin` | ZPOPMIN key |
+| `mset` | MSET with 10 key-value pairs |
+| `vec-load` | HSET with vector data (supports --tag-field, --search-tags, --numeric-field) |
+| `vec-query` | FT.SEARCH KNN query (supports --tag-field, --tag-filter for filtered search) |
+| `vec-delete` | DEL vector keys |
+| `vec-update` | Update existing vector keys (same as vec-load) |
 
 ### Examples
 
@@ -289,6 +303,35 @@ Two approaches for guaranteed 100% hit rate:
 # ACL authentication (username + password)
 ./valkey-search-benchmark -h localhost -p 6379 --user myuser -a mypassword -t ping
 ```
+
+#### Console Output
+
+The benchmark displays a compact summary with base network latency and results:
+
+```
+valkey-search-benchmark v0.1.0
+============================================================
+Connection: localhost:6379 | cluster(rfr=No)
+Base RTT: PING avg=0.12ms p99=0.18ms | GET-miss avg=0.15ms p99=0.22ms
+Workload: clients=50 threads=4 pipeline=1 requests=1,000,000 keyspace=1,000,000
+Tests: get
+============================================================
+
+Running test: GET... (892,456/s)
+
+=== GET ===
+Throughput: 892,456 req/s | Requests: 1,000,000 | Duration: 1.12s
+Latency (ms): avg=0.21 p50=0.18 p95=0.35 p99=0.52 p99.9=1.23 max=4.56
+Keyspace: hits=892,456 misses=107,544 hit-rate=89.2%
+
+============================================================
+BENCHMARK COMPLETE
+============================================================
+GET: 892,456 req/s | avg=0.21ms p50=0.18ms p99=0.52ms max=4.56ms | hit-rate=89.2%
+```
+
+The **Base RTT** line shows single-client, no-pipeline latency for PING and GET-miss operations.
+This establishes a network baseline that helps normalize results across different network conditions.
 
 #### JSON Output
 
@@ -548,8 +591,63 @@ Vector datasets use a binary format with the following structure:
 | `--ef-runtime <N>` | HNSW search parameter | `10` |
 | `--m <N>` | HNSW max connections | `16` |
 | `-k <N>` | Number of neighbors to return | `10` |
+| `--nocontent` | Return only keys, not vector data | `false` |
+
+### Tag and Attribute Options (Filtered Search)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--tag-field <NAME>` | Tag field name in hash (for filtered search) | None |
+| `--search-tags <DIST>` | Tag distribution for vec-load (see format below) | None |
+| `--tag-filter <FILTER>` | Tag filter for vec-query FT.SEARCH | None |
+| `--tag-max-len <N>` | Maximum tag field payload length | `128` |
+| `--numeric-field <NAME>` | Numeric field name in hash | None |
+
+#### Tag Distribution Format
+
+The `--search-tags` option specifies tag patterns and their selection probabilities:
+
+```
+pattern:probability,pattern:probability,...
+```
+
+- Each tag has an **independent probability** of being selected (0-100%)
+- A vector may have 0, 1, or multiple tags based on the probabilities
+- Pattern `__rand_int__` is replaced with a random integer (0-999999)
+
+**Examples:**
+
+```bash
+# Single tag, always included
+--search-tags "electronics:100"
+
+# Multiple tags with different probabilities
+--search-tags "electronics:30,clothing:25,home:20,sports:15,other:10"
+
+# Dynamic tags with random suffixes
+--search-tags "category_id_:50,tag__rand_int__:100"
+```
+
+#### Tag Filter Format
+
+The `--tag-filter` option specifies the filter pattern for vec-query:
+
+```bash
+# Single tag filter
+--tag-filter "electronics"
+
+# Multiple tags (OR condition)
+--tag-filter "electronics|clothing|home"
+```
+
+This generates FT.SEARCH queries with the filter prefix:
+```
+@tag_field:{electronics|clothing|home}=>[KNN 10 @embedding $BLOB]
+```
 
 ### Vector Search Examples
+
+#### Basic Vector Operations
 
 ```bash
 # Load vectors into database
@@ -570,6 +668,85 @@ Vector datasets use a binary format with the following structure:
   -k 10 \
   -t vec-query \
   -n 10000
+```
+
+#### Filtered Vector Search
+
+Load vectors with category tags, then run filtered queries:
+
+```bash
+# Step 1: Create index with TAG field
+./valkey-search-benchmark --cli -h localhost \
+  "FT.CREATE myindex ON HASH PREFIX 1 doc: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 128 DISTANCE_METRIC L2 category TAG"
+
+# Step 2: Load vectors with tag distribution
+# Each vector gets tags based on probability:
+# - 30% get "electronics"
+# - 25% get "clothing"
+# - 20% get "home"
+# - 15% get "sports"
+# - 10% get "other"
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --index-name myindex \
+  --prefix "doc:" \
+  --tag-field category \
+  --search-tags "electronics:30,clothing:25,home:20,sports:15,other:10" \
+  -t vec-load \
+  -n 100000
+
+# Step 3: Query with single tag filter
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --index-name myindex \
+  --prefix "doc:" \
+  --tag-field category \
+  --tag-filter "electronics" \
+  -k 10 \
+  -t vec-query \
+  -n 10000
+
+# Step 4: Query with multiple tag filter (OR condition)
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --index-name myindex \
+  --prefix "doc:" \
+  --tag-field category \
+  --tag-filter "electronics|clothing|home" \
+  -k 10 \
+  -t vec-query \
+  -n 10000
+```
+
+#### High-Cardinality Tags
+
+For scenarios with many unique tag values:
+
+```bash
+# Load vectors with random category IDs (high cardinality)
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --index-name myindex \
+  --prefix "doc:" \
+  --tag-field user_id \
+  --search-tags "user__rand_int__:100" \
+  -t vec-load \
+  -n 100000
+```
+
+#### Vectors with Numeric Attributes
+
+Add numeric fields for range-based filtering:
+
+```bash
+# Load vectors with numeric timestamp field
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --index-name myindex \
+  --prefix "doc:" \
+  --numeric-field timestamp \
+  -t vec-load \
+  -n 100000
 ```
 
 ## Architecture

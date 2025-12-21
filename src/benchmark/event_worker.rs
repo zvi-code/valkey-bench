@@ -893,6 +893,22 @@ impl EventWorker {
                         );
                         self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
                     }
+                    PlaceholderType::Tag => {
+                        // Tag placeholder - generate from distribution or use empty
+                        // Tags are comma-separated and padded to max length
+                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
+                        // Fill with commas (padding character)
+                        buf.fill(b',');
+                    }
+                    PlaceholderType::Numeric => {
+                        // Numeric placeholder - write vector ID or random value
+                        write_fixed_width_u64(
+                            &mut self.clients[client_idx].write_buf,
+                            offset,
+                            key_num,
+                            ph.len,
+                        );
+                    }
                 }
             }
         }
@@ -1259,6 +1275,22 @@ impl EventWorker {
                             |slot| self.clients[client_idx].owns_slot(slot),
                         );
                         self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
+                    }
+                    PlaceholderType::Tag => {
+                        // Tag placeholder - generate from distribution or use empty
+                        // Tags are comma-separated and padded to max length
+                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
+                        // Fill with commas (padding character)
+                        buf.fill(b',');
+                    }
+                    PlaceholderType::Numeric => {
+                        // Numeric placeholder - write vector ID or random value
+                        write_fixed_width_u64(
+                            &mut self.clients[client_idx].write_buf,
+                            offset,
+                            key_num,
+                            ph.len,
+                        );
                     }
                 }
             }

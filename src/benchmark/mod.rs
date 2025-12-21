@@ -11,4 +11,4 @@ pub mod orchestrator;
 
 pub use counters::GlobalCounters;
 pub use event_worker::{EventWorker, EventWorkerResult, RecallStats};
-pub use orchestrator::{BenchmarkResult, KeyspaceStats, Orchestrator};
+pub use orchestrator::{format_count, format_throughput, BaseLatency, BenchmarkResult, KeyspaceStats, Orchestrator};

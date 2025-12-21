@@ -48,37 +48,87 @@ fn setup_logging(verbose: bool, quiet: bool) {
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 }
 
-fn print_banner(config: &BenchmarkConfig) {
+fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseLatency>) {
     if config.quiet {
         return;
     }
 
     println!("valkey-search-benchmark v{}", env!("CARGO_PKG_VERSION"));
-    println!("====================================");
-    println!(
-        "Hosts: {:?}",
-        config
-            .addresses
-            .iter()
-            .map(|a| a.to_string())
-            .collect::<Vec<_>>()
-    );
-    println!(
-        "Clients: {}, Threads: {}, Pipeline: {}",
-        config.clients, config.threads, config.pipeline
-    );
-    println!("Requests: {}", config.requests);
-    println!("Tests: {:?}", config.tests);
+    println!("============================================================");
+
+    // Connection info
+    let hosts: Vec<_> = config.addresses.iter().map(|a| a.to_string()).collect();
+    let host_str = if hosts.len() == 1 {
+        hosts[0].clone()
+    } else {
+        format!("{} hosts", hosts.len())
+    };
+
+    let mut conn_parts = vec![host_str];
+    if config.tls.is_some() {
+        conn_parts.push("TLS".to_string());
+    }
+    if config.auth.is_some() {
+        conn_parts.push("AUTH".to_string());
+    }
     if config.cluster_mode {
-        println!("Cluster mode: enabled, RFR: {:?}", config.read_from_replica);
+        conn_parts.push(format!("cluster(rfr={:?})", config.read_from_replica));
     }
+    println!("Connection: {}", conn_parts.join(" | "));
+
+    // Base latency (network round-trip baseline)
+    if let Some(bl) = base_latency {
+        println!("Base RTT: {}", bl.format());
+    }
+
+    // Workload config - compact single line
+    let mut workload_parts = vec![
+        format!("clients={}", config.clients),
+        format!("threads={}", config.threads),
+        format!("pipeline={}", config.pipeline),
+        format!("requests={}", benchmark::format_count(config.requests)),
+        format!("keyspace={}", benchmark::format_count(config.keyspace_len)),
+    ];
+    if config.data_size > 0 {
+        workload_parts.push(format!("datasize={}", config.data_size));
+    }
+    if config.sequential {
+        workload_parts.push("sequential".to_string());
+    }
+    if config.requests_per_second > 0 {
+        workload_parts.push(format!("rps={}", config.requests_per_second));
+    }
+    println!("Workload: {}", workload_parts.join(" "));
+
+    // Tests
+    println!("Tests: {}", config.tests.join(", "));
+
+    // Vector search config (if applicable)
     if let Some(ref search) = config.search_config {
-        println!(
-            "Vector search: dim={}, k={}, algo={:?}",
-            search.dim, search.k, search.algorithm
-        );
+        let mut search_parts = vec![
+            format!("index={}", search.index_name),
+            format!("dim={}", search.dim),
+            format!("k={}", search.k),
+            format!("algo={:?}", search.algorithm),
+        ];
+        if let Some(ef) = search.ef_search {
+            search_parts.push(format!("ef_search={}", ef));
+        }
+        if search.tag_field.is_some() {
+            search_parts.push(format!("tag_field={}", search.tag_field.as_ref().unwrap()));
+        }
+        if search.tag_filter.is_some() {
+            search_parts.push(format!("tag_filter={}", search.tag_filter.as_ref().unwrap()));
+        }
+        println!("Search: {}", search_parts.join(" "));
     }
-    println!("====================================\n");
+
+    // Dataset
+    if let Some(ref path) = config.dataset_path {
+        println!("Dataset: {}", path.display());
+    }
+
+    println!("============================================================\n");
 }
 
 /// Run optimization mode: iteratively test configurations to find optimal parameters
@@ -441,17 +491,31 @@ fn run() -> Result<()> {
         None
     };
 
-    // Print banner
-    print_banner(&config);
-
-    // If optimization mode is enabled, run the optimizer
+    // If optimization mode is enabled, run the optimizer (no base latency needed)
     if config.optimize {
+        print_banner(&config, None);
         let dataset_arc = dataset.map(Arc::new);
         return run_optimization(&config, dataset_arc);
     }
 
     // Create orchestrator
     let mut orchestrator = Orchestrator::new(config.clone())?;
+
+    // Measure base latency (single-client PING and GET miss)
+    let base_latency = if !config.quiet {
+        match orchestrator.measure_base_latency() {
+            Ok(bl) => Some(bl),
+            Err(e) => {
+                eprintln!("Warning: Failed to measure base latency: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Print banner with base latency
+    print_banner(&config, base_latency.as_ref());
 
     // Set dataset on orchestrator if loaded
     if let Some(dataset) = dataset {
@@ -517,16 +581,45 @@ fn run() -> Result<()> {
         orchestrator.export_csv(&results, csv_path)?;
     }
 
-    // Print summary
-    println!("\n====================================");
-    println!("BENCHMARK COMPLETE");
-    println!("====================================");
-    println!("Tests run: {}", results.len());
+    // Print final summary
+    if !config.quiet {
+        println!("\n============================================================");
+        println!("BENCHMARK COMPLETE");
+        println!("============================================================");
 
-    let total_requests: u64 = results.iter().map(|r| r.total_requests).sum();
-    let total_errors: u64 = results.iter().map(|r| r.error_count).sum();
-    println!("Total requests: {}", total_requests);
-    println!("Total errors: {}", total_errors);
+        for result in &results {
+            // Throughput line
+            let mut summary_parts = vec![
+                format!("{}: {} req/s", result.test_name, benchmark::format_throughput(result.throughput)),
+            ];
+
+            // Latency summary
+            summary_parts.push(format!(
+                "avg={:.2}ms p50={:.2}ms p99={:.2}ms max={:.2}ms",
+                result.histogram.mean() / 1000.0,
+                result.percentile_ms(50.0),
+                result.percentile_ms(99.0),
+                result.histogram.max() as f64 / 1000.0
+            ));
+
+            // Recall (if applicable)
+            if result.recall_stats.total_queries > 0 {
+                summary_parts.push(format!("recall={:.4}", result.recall_stats.average()));
+            }
+
+            // Hit rate (if applicable)
+            if result.keyspace_stats.has_data() {
+                summary_parts.push(format!("hit-rate={:.1}%", result.keyspace_stats.hit_rate() * 100.0));
+            }
+
+            // Errors (if any)
+            if result.error_count > 0 {
+                summary_parts.push(format!("errors={}", result.error_count));
+            }
+
+            println!("{}", summary_parts.join(" | "));
+        }
+    }
 
     Ok(())
 }

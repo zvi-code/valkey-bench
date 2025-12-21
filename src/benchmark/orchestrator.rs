@@ -55,6 +55,35 @@ impl KeyspaceStats {
     }
 }
 
+/// Base latency measurement result
+///
+/// Measures network round-trip time using single-client, no-pipeline operations.
+/// This helps normalize benchmark results across different network conditions.
+#[derive(Debug, Clone)]
+pub struct BaseLatency {
+    /// PING latency in microseconds
+    pub ping_avg_us: f64,
+    pub ping_p99_us: u64,
+    /// GET miss latency in microseconds (GET on non-existent key)
+    pub get_miss_avg_us: f64,
+    pub get_miss_p99_us: u64,
+    /// Number of samples used
+    pub samples: u32,
+}
+
+impl BaseLatency {
+    /// Format as compact string for banner
+    pub fn format(&self) -> String {
+        format!(
+            "PING avg={:.2}ms p99={:.2}ms | GET-miss avg={:.2}ms p99={:.2}ms",
+            self.ping_avg_us / 1000.0,
+            self.ping_p99_us as f64 / 1000.0,
+            self.get_miss_avg_us / 1000.0,
+            self.get_miss_p99_us as f64 / 1000.0
+        )
+    }
+}
+
 /// Benchmark result summary
 pub struct BenchmarkResult {
     /// Test name
@@ -88,38 +117,51 @@ impl BenchmarkResult {
         self.percentile_us(p) as f64 / 1000.0
     }
 
-    /// Print summary
+    /// Print summary (compact format)
     pub fn print_summary(&self) {
         println!("\n=== {} ===", self.test_name);
-        println!("Throughput: {:.2} req/sec", self.throughput);
-        println!("Total requests: {}", self.total_requests);
-        println!("Duration: {:.2}s", self.duration.as_secs_f64());
-        println!("Errors: {}", self.error_count);
-        println!("\nLatency (ms):");
-        println!("  avg: {:.3}", self.histogram.mean() / 1000.0);
-        println!("  p50: {:.3}", self.percentile_ms(50.0));
-        println!("  p95: {:.3}", self.percentile_ms(95.0));
-        println!("  p99: {:.3}", self.percentile_ms(99.0));
-        println!("  p99.9: {:.3}", self.percentile_ms(99.9));
-        println!("  max: {:.3}", self.histogram.max() as f64 / 1000.0);
+        println!(
+            "Throughput: {} req/s | Requests: {} | Duration: {:.2}s{}",
+            format_throughput(self.throughput),
+            format_count(self.total_requests),
+            self.duration.as_secs_f64(),
+            if self.error_count > 0 {
+                format!(" | Errors: {}", self.error_count)
+            } else {
+                String::new()
+            }
+        );
+        println!(
+            "Latency (ms): avg={:.2} p50={:.2} p95={:.2} p99={:.2} p99.9={:.2} max={:.2}",
+            self.histogram.mean() / 1000.0,
+            self.percentile_ms(50.0),
+            self.percentile_ms(95.0),
+            self.percentile_ms(99.0),
+            self.percentile_ms(99.9),
+            self.histogram.max() as f64 / 1000.0
+        );
 
+        // Show recall only if computed (vector search with ground truth)
         if self.recall_stats.total_queries > 0 {
-            println!("\nRecall:");
-            println!("  avg: {:.4}", self.recall_stats.average());
-            println!("  min: {:.4}", self.recall_stats.min_recall);
-            println!("  max: {:.4}", self.recall_stats.max_recall);
-            println!("  perfect (1.0): {}", self.recall_stats.perfect_count);
-            println!("  zero (0.0): {}", self.recall_stats.zero_count);
-        } else if self.total_requests > 0 {
-            // Debug: show if recall wasn't computed
-            println!("\n(Recall not computed - requires dataset with ground truth)");
+            println!(
+                "Recall: avg={:.4} min={:.4} max={:.4} | perfect={} zero={}",
+                self.recall_stats.average(),
+                self.recall_stats.min_recall,
+                self.recall_stats.max_recall,
+                self.recall_stats.perfect_count,
+                self.recall_stats.zero_count
+            );
         }
 
-        // Always show keyspace hit/miss stats
-        println!("\nKeyspace:");
-        println!("  hits: {}", self.keyspace_stats.hits);
-        println!("  misses: {}", self.keyspace_stats.misses);
-        println!("  hit rate: {:.2}%", self.keyspace_stats.hit_rate() * 100.0);
+        // Show keyspace stats only if there was activity
+        if self.keyspace_stats.has_data() {
+            println!(
+                "Keyspace: hits={} misses={} hit-rate={:.1}%",
+                format_count(self.keyspace_stats.hits),
+                format_count(self.keyspace_stats.misses),
+                self.keyspace_stats.hit_rate() * 100.0
+            );
+        }
     }
 }
 
@@ -362,6 +404,68 @@ impl Orchestrator {
         self.dataset = Some(dataset);
     }
 
+    /// Measure base network latency using single-client PING and GET miss
+    ///
+    /// This provides a baseline for network round-trip time that can be used
+    /// to normalize benchmark results across different network conditions.
+    /// Uses 1000 samples by default for stable measurements.
+    pub fn measure_base_latency(&self) -> Result<BaseLatency> {
+        self.measure_base_latency_samples(1000)
+    }
+
+    /// Measure base latency with custom sample count
+    pub fn measure_base_latency_samples(&self, samples: u32) -> Result<BaseLatency> {
+        use crate::utils::RespEncoder;
+
+        let addr = &self.config.addresses[0];
+        let mut conn = self.connection_factory.create(&addr.host, addr.port)?;
+
+        // Prepare PING command
+        let mut ping_encoder = RespEncoder::with_capacity(32);
+        ping_encoder.encode_command_str(&["PING"]);
+
+        // Prepare GET command with unlikely-to-exist key
+        let miss_key = "__vsb_base_latency_miss_probe_12345678__";
+        let mut get_encoder = RespEncoder::with_capacity(64);
+        get_encoder.encode_command_str(&["GET", miss_key]);
+
+        // Create histograms
+        let mut ping_hist =
+            Histogram::<u64>::new_with_bounds(1, 3_600_000_000, 3).expect("histogram");
+        let mut get_hist =
+            Histogram::<u64>::new_with_bounds(1, 3_600_000_000, 3).expect("histogram");
+
+        // Warmup: 10 iterations to prime the connection
+        for _ in 0..10 {
+            let _ = conn.execute_encoded(&ping_encoder);
+            let _ = conn.execute_encoded(&get_encoder);
+        }
+
+        // Measure PING latency
+        for _ in 0..samples {
+            let start = Instant::now();
+            let _ = conn.execute_encoded(&ping_encoder);
+            let elapsed = start.elapsed().as_micros() as u64;
+            ping_hist.record(elapsed).ok();
+        }
+
+        // Measure GET miss latency
+        for _ in 0..samples {
+            let start = Instant::now();
+            let _ = conn.execute_encoded(&get_encoder);
+            let elapsed = start.elapsed().as_micros() as u64;
+            get_hist.record(elapsed).ok();
+        }
+
+        Ok(BaseLatency {
+            ping_avg_us: ping_hist.mean(),
+            ping_p99_us: ping_hist.value_at_percentile(99.0),
+            get_miss_avg_us: get_hist.mean(),
+            get_miss_p99_us: get_hist.value_at_percentile(99.0),
+            samples,
+        })
+    }
+
     /// Capture a cluster snapshot of INFO stats from all nodes
     ///
     /// Uses the snapshot infrastructure to collect and aggregate metrics
@@ -534,15 +638,29 @@ impl Orchestrator {
             pb.set_style(
                 ProgressStyle::default_bar()
                     .template(
-                        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec})",
+                        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({msg})",
                     )
                     .unwrap()
                     .progress_chars("#>-"),
             );
 
+            let start = std::time::Instant::now();
+            let mut last_finished = 0u64;
+            let mut last_time = start;
+
             while !counters.is_shutdown() {
                 let (finished, _) = counters.progress();
                 pb.set_position(finished);
+
+                // Calculate current throughput without decimals
+                let now = std::time::Instant::now();
+                let interval = now.duration_since(last_time).as_secs_f64();
+                if interval >= 0.5 {
+                    let throughput = (finished - last_finished) as f64 / interval;
+                    pb.set_message(format!("{}/s", format_count(throughput as u64)));
+                    last_finished = finished;
+                    last_time = now;
+                }
 
                 if finished >= total {
                     break;
@@ -551,7 +669,7 @@ impl Orchestrator {
                 thread::sleep(Duration::from_millis(100));
             }
 
-            pb.finish_with_message("Complete");
+            pb.finish_with_message("done");
         }
     }
 
@@ -1038,6 +1156,27 @@ impl Orchestrator {
     }
 }
 
+/// Format throughput without meaningless decimals
+/// Examples: 1,234,567 req/s, 987,654 req/s
+pub fn format_throughput(throughput: f64) -> String {
+    let value = throughput as u64;
+    format_count(value)
+}
+
+/// Format large numbers with thousands separators
+/// Examples: 1,234,567 or 987,654
+pub fn format_count(value: u64) -> String {
+    let s = value.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.insert(0, ',');
+        }
+        result.insert(0, c);
+    }
+    result
+}
+
 /// Detect engine type from INFO SEARCH response
 fn detect_engine_type(conn: &mut crate::client::RawConnection) -> EngineType {
     use crate::utils::{RespEncoder, RespValue};
@@ -1085,5 +1224,24 @@ mod tests {
 
         // p50 should be around 1ms
         assert!(result.percentile_ms(50.0) < 2.0);
+    }
+
+    #[test]
+    fn test_format_count() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(1), "1");
+        assert_eq!(format_count(123), "123");
+        assert_eq!(format_count(1234), "1,234");
+        assert_eq!(format_count(12345), "12,345");
+        assert_eq!(format_count(123456), "123,456");
+        assert_eq!(format_count(1234567), "1,234,567");
+        assert_eq!(format_count(1000000), "1,000,000");
+    }
+
+    #[test]
+    fn test_format_throughput() {
+        assert_eq!(format_throughput(937821.7051), "937,821");
+        assert_eq!(format_throughput(1000000.5), "1,000,000");
+        assert_eq!(format_throughput(123.456), "123");
     }
 }

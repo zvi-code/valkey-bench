@@ -37,6 +37,10 @@ pub enum PlaceholderType {
     ClusterTag,
     /// Random integer
     RandInt,
+    /// Tag field value (variable-length string, padded to max length)
+    Tag,
+    /// Numeric field value (fixed-width decimal)
+    Numeric,
 }
 
 /// Pre-computed command template with placeholder offsets
