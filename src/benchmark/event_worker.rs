@@ -79,7 +79,7 @@ impl RecallStats {
 }
 
 use crate::client::{CommandBuffer, PlaceholderOffset, PlaceholderType};
-use crate::cluster::{ClusterTagMap, ClusterTopology};
+use crate::cluster::{ClusterTagMap, ClusterTopology, ProtectedVectorIds};
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
 use crate::utils::{RespDecoder, RespValue};
@@ -485,6 +485,8 @@ pub struct EventWorker {
     requests_processed: u64,
     /// Cluster tag map for partial prefill (skip existing vectors)
     tag_map: Option<Arc<ClusterTagMap>>,
+    /// Protected vector IDs (ground truth vectors to skip during deletion)
+    protected_ids: Option<Arc<ProtectedVectorIds>>,
     /// Workload type (for vec-load skip logic)
     workload_type: WorkloadType,
     /// Slot to node address mapping (built from topology)
@@ -510,7 +512,8 @@ impl EventWorker {
     /// * `command_template` - Pre-built command template
     /// * `topology` - Optional cluster topology for slot-aware routing
     /// * `tag_map` - Optional cluster tag map for partial prefill support
-    /// * `workload_type` - Workload type (for vec-load skip logic)
+    /// * `protected_ids` - Optional protected vector IDs (for vec-delete skip logic)
+    /// * `workload_type` - Workload type (for vec-load/vec-delete skip logic)
     pub fn new(
         id: usize,
         addresses: Vec<(String, u16)>,
@@ -519,6 +522,7 @@ impl EventWorker {
         command_template: CommandBuffer,
         topology: Option<&ClusterTopology>,
         tag_map: Option<Arc<ClusterTagMap>>,
+        protected_ids: Option<Arc<ProtectedVectorIds>>,
         workload_type: WorkloadType,
     ) -> io::Result<Self> {
         let poll = Poll::new()?;
@@ -647,6 +651,7 @@ impl EventWorker {
             error_count: 0,
             requests_processed: 0,
             tag_map,
+            protected_ids,
             workload_type,
             slot_to_node,
             regular_key_prefix: config.key_prefix.clone(),
@@ -829,11 +834,15 @@ impl EventWorker {
                 let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
                 match ph.placeholder_type {
                     PlaceholderType::Key => {
-                        if dataset.is_some() {
+                        // VecDelete: key_num is the deleteable vector ID
+                        if matches!(self.workload_type, WorkloadType::VecDelete) {
+                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
+                        } else if dataset.is_some() {
                             continue; // Set with Vector
+                        } else {
+                            // Use the pre-determined key
+                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                         }
-                        // Use the pre-determined key
-                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                     }
                     PlaceholderType::Vector => {
                         if let Some(ds) = dataset {
@@ -1148,7 +1157,25 @@ impl EventWorker {
     ) {
         // Pre-generate key number for deterministic key and cluster tag generation
         // This ensures SET and GET with same seed produce identical full keys
-        let key_num = if dataset.is_none() {
+        //
+        // For VecDelete with protected_ids: use claim_deleteable_id() to skip ground truth vectors
+        let key_num = if matches!(self.workload_type, WorkloadType::VecDelete) {
+            if let Some(ref pids) = self.protected_ids {
+                // Claim next deleteable vector ID (skips ground truth)
+                match pids.claim_deleteable_id() {
+                    Some(id) => id,
+                    None => {
+                        // All deleteable vectors processed
+                        return;
+                    }
+                }
+            } else if let Some(ds) = dataset {
+                // No protected IDs, use sequential dataset index
+                counters.next_dataset_idx() % ds.num_vectors()
+            } else {
+                self.next_key_num(counters)
+            }
+        } else if dataset.is_none() {
             self.next_key_num(counters)
         } else {
             0 // Will be overwritten by vector/dataset index
@@ -1160,11 +1187,15 @@ impl EventWorker {
                 let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
                 match ph.placeholder_type {
                     PlaceholderType::Key => {
-                        if dataset.is_some() {
+                        // VecDelete: key_num is the deleteable vector ID (already computed above)
+                        if matches!(self.workload_type, WorkloadType::VecDelete) {
+                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
+                        } else if dataset.is_some() {
                             continue; // Set with Vector - key will be set by Vector handler
+                        } else {
+                            // Use pre-generated key for reproducible keyspace
+                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                         }
-                        // Use pre-generated key for reproducible keyspace
-                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                     }
                     PlaceholderType::Vector => {
                         if let Some(ds) = dataset {

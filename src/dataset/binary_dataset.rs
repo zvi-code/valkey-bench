@@ -272,6 +272,33 @@ impl DatasetContext {
             .collect()
     }
 
+    // === Ground Truth Access ===
+
+    /// Get all unique vector IDs that appear in ground truth
+    ///
+    /// This collects all neighbor IDs across all queries into a HashSet.
+    /// These vectors are "protected" during deletion benchmarks to ensure
+    /// valid recall computation.
+    pub fn get_ground_truth_vector_ids(&self) -> std::collections::HashSet<u64> {
+        let mut ids = std::collections::HashSet::new();
+        for query_idx in 0..self.num_queries {
+            let neighbors = self.get_neighbor_ids(query_idx);
+            for &neighbor_id in neighbors {
+                ids.insert(neighbor_id);
+            }
+        }
+        ids
+    }
+
+    /// Get ground truth vector IDs as a sorted vector
+    ///
+    /// Sorted for efficient binary search lookups.
+    pub fn get_ground_truth_vector_ids_sorted(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.get_ground_truth_vector_ids().into_iter().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     // === Statistics ===
 
     /// Get total memory mapped size in bytes

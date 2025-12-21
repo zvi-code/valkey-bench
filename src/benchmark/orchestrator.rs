@@ -15,7 +15,8 @@ use super::counters::GlobalCounters;
 use super::event_worker::{EventWorker, EventWorkerResult, RecallStats};
 use crate::client::{ConnectionFactory, ControlPlane, ControlPlaneExt};
 use crate::cluster::{
-    build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, TopologyManager,
+    build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, ProtectedVectorIds,
+    TopologyManager,
 };
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
@@ -133,6 +134,8 @@ pub struct Orchestrator {
     topology_manager: Option<Arc<TopologyManager>>,
     /// Cluster tag map for vector ID to node routing (for vec-query with existing data)
     cluster_tag_map: Option<Arc<ClusterTagMap>>,
+    /// Protected vector IDs (ground truth) for deletion benchmarks
+    protected_ids: Option<Arc<ProtectedVectorIds>>,
 }
 
 impl Orchestrator {
@@ -173,6 +176,7 @@ impl Orchestrator {
             cluster_topology,
             topology_manager,
             cluster_tag_map: None,
+            protected_ids: None,
         })
     }
 
@@ -213,6 +217,7 @@ impl Orchestrator {
             cluster_topology: topology,
             topology_manager,
             cluster_tag_map: None,
+            protected_ids: None,
         })
     }
 
@@ -224,6 +229,44 @@ impl Orchestrator {
     /// Set an existing cluster tag map (for sharing across optimization iterations)
     pub fn set_cluster_tag_map(&mut self, tag_map: Arc<ClusterTagMap>) {
         self.cluster_tag_map = Some(tag_map);
+    }
+
+    /// Build protected vector IDs from dataset ground truth
+    ///
+    /// This extracts all vector IDs that appear in the ground truth neighbor lists.
+    /// These IDs will be skipped during vec-delete to ensure valid recall computation.
+    pub fn build_protected_ids(&mut self) -> Result<()> {
+        let dataset = self.dataset.as_ref().ok_or_else(|| {
+            crate::utils::BenchmarkError::Config("Dataset required for protected IDs".to_string())
+        })?;
+
+        let ground_truth_ids = dataset.get_ground_truth_vector_ids();
+        let protected_count = ground_truth_ids.len();
+        let protected = ProtectedVectorIds::new(ground_truth_ids, dataset.num_vectors());
+
+        if !self.config.quiet {
+            println!(
+                "[PROTECTED-IDS] {} vectors protected (ground truth neighbors)",
+                protected_count
+            );
+            println!(
+                "[PROTECTED-IDS] {} vectors available for deletion",
+                protected.deleteable_count()
+            );
+        }
+
+        self.protected_ids = Some(Arc::new(protected));
+        Ok(())
+    }
+
+    /// Get the protected vector IDs (for sharing across orchestrators)
+    pub fn protected_ids(&self) -> Option<Arc<ProtectedVectorIds>> {
+        self.protected_ids.clone()
+    }
+
+    /// Set protected vector IDs (for sharing across optimization iterations)
+    pub fn set_protected_ids(&mut self, protected: Arc<ProtectedVectorIds>) {
+        self.protected_ids = Some(protected);
     }
 
     /// Discover cluster topology by connecting to seed node
@@ -664,6 +707,7 @@ impl Orchestrator {
             let addrs = addresses.clone();
             let topo = topology.clone();
             let tag_map = self.cluster_tag_map.clone();
+            let protected = self.protected_ids.clone();
             let wl_type = workload;
 
             let handle = thread::Builder::new()
@@ -678,6 +722,7 @@ impl Orchestrator {
                         buffer,
                         topo.as_ref(),
                         tag_map,
+                        protected,
                         wl_type,
                     ) {
                         Ok(worker) => worker.run(counters, dataset),

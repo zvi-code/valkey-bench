@@ -7,9 +7,11 @@
 //! - Node selection
 //! - Dynamic topology refresh on MOVED/ASK errors
 //! - Cluster tag mapping for vector ID to node routing
+//! - Protected vector IDs for deletion benchmarks
 
 pub mod cluster_tag_map;
 pub mod node;
+pub mod protected_ids;
 pub mod topology;
 pub mod topology_manager;
 
@@ -18,5 +20,6 @@ pub use cluster_tag_map::{
     ClusterTagMap,
 };
 pub use node::ClusterNode;
+pub use protected_ids::ProtectedVectorIds;
 pub use topology::ClusterTopology;
 pub use topology_manager::{RedirectInfo, TopologyManager};

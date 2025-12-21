@@ -98,7 +98,7 @@ impl WorkloadType {
 
     /// Check if workload requires dataset
     pub fn requires_dataset(&self) -> bool {
-        matches!(self, Self::VecLoad | Self::VecQuery | Self::VecUpdate)
+        matches!(self, Self::VecLoad | Self::VecQuery | Self::VecUpdate | Self::VecDelete)
     }
 
     /// Check if workload is a vector search operation

@@ -189,10 +189,21 @@ fn run_optimization(
         orchestrator.build_cluster_tag_map()?;
     }
 
+    // Build protected IDs for vec-delete (skip ground truth vectors)
+    let has_vec_delete = base_config.tests.iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower.contains("delete")
+    });
+    if has_vec_delete && dataset.is_some() {
+        info!("Building protected vector IDs from ground truth...");
+        orchestrator.build_protected_ids()?;
+    }
+
     // Extract shared resources from base orchestrator for iteration reuse
     // This avoids rediscovering cluster topology on each iteration (prevents port exhaustion)
     let shared_topology = orchestrator.cluster_topology().cloned();
     let shared_tag_map = orchestrator.cluster_tag_map();
+    let shared_protected_ids = orchestrator.protected_ids();
 
     // Optimization loop
     let mut iteration = 0;
@@ -230,6 +241,9 @@ fn run_optimization(
         }
         if let Some(ref tag_map) = shared_tag_map {
             iter_orchestrator.set_cluster_tag_map(tag_map.clone());
+        }
+        if let Some(ref protected) = shared_protected_ids {
+            iter_orchestrator.set_protected_ids(protected.clone());
         }
 
         // Run benchmark for the first test only
@@ -472,6 +486,19 @@ fn run() -> Result<()> {
         if config.search_config.is_some() {
             info!("Building cluster tag map for existing vectors...");
             orchestrator.build_cluster_tag_map()?;
+        }
+    }
+
+    // Build protected IDs for vec-delete (skip ground truth vectors)
+    // The orchestrator.build_protected_ids() will only succeed if a dataset is loaded
+    let has_vec_delete = config.tests.iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower.contains("delete")
+    });
+    if has_vec_delete {
+        // Try to build protected IDs - will fail gracefully if no dataset
+        if let Err(e) = orchestrator.build_protected_ids() {
+            info!("Note: Cannot build protected IDs: {} (deletion will not skip ground truth)", e);
         }
     }
 
