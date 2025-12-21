@@ -34,9 +34,44 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 **Description:** Decompose WorkloadContext into separate abstractions for data source, address iterator, and workload execution.
 **Benefits:** Improved modularity and extensibility for different data sources and access patterns
 
+### 7. Address the design in valkey-search-benchmark/docs/field-keyspace-design.md
+**Status:** Planned
+**Description:** Implement support for nested key addressing, field-specific ranges, and more complex data structures
+**Benefits:** More realistic testing scenarios with complex data structures
+
+### 8. Add custom binary format data ingestion support
+**Status:** Planned
+**Description:** Implement data loaders for custom binary formats beyond the existing dataset formats. A custom binary format is associated to a binary-format-layout file that describes how to parse the binary data. The layout file describes the offsets and lengths of vector data, tag data, numeric fields, etc. [The current dataset bin format will become a special case of this with a predefined layout.]
+**Benefits:** Broader applicability and easier integration with various data sources
+
+### 9. Revive the node balanced load
+**Status:** Planned
+**Description:** Re-implement the node balanced load feature from the C benchmark tool to ensure even distribution of workload across cluster nodes.
+**Benefits:** Improved performance and resource utilization in cluster mode
+
+### 10. Add support Tag\Numeric\Text indexes
+**Status:** Planned
+**Description:** Extend the benchmark tool to support indexing and querying of Tag, Numeric, and Text data types.
+**Benefits:** Comprehensive testing capabilities for various data types and index configurations
+
+### 11. Verify node pre-config works [Rust rewrite]
+**Status:** Planned
+**Description:** Ensure that node pre-configuration settings are correctly applied and verified in the Rust implementation of the benchmark tool.
+**Benefits:** Reliable configuration management and consistency across test runs [works in c code]
+
+### 12. Add support for multiple indexes in a single benchmark run
+**Status:** Planned
+**Description:** Implement functionality to benchmark multiple indexes simultaneously within a single test run.
+**Benefits:** Test scenarios involving multiple indexes and their interactions.
+
+### 13. Create sharded index ingestion and query workloads
+**Status:** Planned
+**Description:** Develop workloads that support sharded index ingestion and querying to simulate per-key\slot index that don't require fan-out to all nodes.
+**Benefits:** Test performance and behavior in sharded index environments.
+
 ---
 
-## Architecture Evolution - Design Exploration
+## Architecture Evolution - Design Exploration [Rust rewrite]
 
 This section captures exploratory design directions for evolving the benchmark architecture. These are not immediate tasks but represent a vision for better abstraction layers.
 
