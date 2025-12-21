@@ -114,7 +114,6 @@ Read-from-replica strategies:
 - `primary` - Always read from primary (default)
 - `prefer-replica` - Prefer replicas, fallback to primary
 - `round-robin` - Round-robin across all nodes
-- `az-affinity` - Prefer same availability zone
 
 #### Benchmark Options
 
@@ -145,7 +144,10 @@ If no command is given, starts an interactive REPL.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-q, --quiet` | Quiet mode (no progress bar) | `false` |
-| `--json <FILE>` | Export results to JSON file | None |
+| `-v, --verbose` | Verbose output | `false` |
+| `-o, --output <FILE>` | Output file path | None |
+| `--output-format <FMT>` | Output format (text, json) | `text` |
+| `--csv <FILE>` | CSV file for per-second stats | None |
 
 ### Keyspace and Key Distribution
 
@@ -336,8 +338,8 @@ This establishes a network baseline that helps normalize results across differen
 #### JSON Output
 
 ```bash
-# Export results to JSON
-./valkey-search-benchmark -h localhost -p 6379 -t ping,set,get -o results.json
+# Export results to JSON file
+./valkey-search-benchmark -h localhost -p 6379 -t ping,set,get -o results.json --output-format json
 ```
 
 Output format:
@@ -496,7 +498,7 @@ The optimizer uses a three-phase approach:
 
 # Vector search: maximize QPS with recall above 95%
 ./valkey-search-benchmark -h cluster-node --cluster -t vec-query \
-  --dataset vectors.bin --index-name idx -n 100000 \
+  --dataset vectors.bin --search-index idx -n 100000 \
   --optimize --objective "maximize:qps" --constraint "recall:gt:0.95" \
   --tune "ef_search:10:500:10" --tune "clients:10:100:10"
 
@@ -583,15 +585,17 @@ Vector datasets use a binary format with the following structure:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--dataset <FILE>` | Binary dataset file | None |
-| `--index-name <NAME>` | Vector index name | `idx` |
-| `--prefix <PREFIX>` | Key prefix for vectors | `vec:` |
-| `--algorithm <ALG>` | HNSW or FLAT | `HNSW` |
-| `--distance-metric <M>` | L2, COSINE, or IP | `L2` |
+| `--search-index <NAME>` | Vector index name | `idx` |
+| `--search-prefix <PREFIX>` | Key prefix for vectors | `vec:` |
+| `--search-vector-field <NAME>` | Vector field name in hash | `embedding` |
+| `--search-algorithm <ALG>` | HNSW or FLAT | `HNSW` |
+| `--search-distance <M>` | L2, COSINE, or IP | `L2` |
 | `--ef-construction <N>` | HNSW build parameter | `200` |
-| `--ef-runtime <N>` | HNSW search parameter | `10` |
-| `--m <N>` | HNSW max connections | `16` |
-| `-k <N>` | Number of neighbors to return | `10` |
+| `--ef-search <N>` | HNSW search parameter (EF_RUNTIME) | `10` |
+| `--hnsw-m <N>` | HNSW max connections | `16` |
+| `-k, --search-k <N>` | Number of neighbors to return | `10` |
 | `--nocontent` | Return only keys, not vector data | `false` |
+| `--cleanup` | Delete index after benchmark | `false` |
 
 ### Tag and Attribute Options (Filtered Search)
 
@@ -711,18 +715,18 @@ The `--numeric-field-config` option enables adding numeric fields with various v
 # Load vectors into database
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
+  --search-index myindex \
+  --search-prefix "doc:" \
   -t vec-load \
   -n 100000
 
 # Run vector search queries with recall computation
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
-  --algorithm HNSW \
-  --ef-runtime 100 \
+  --search-index myindex \
+  --search-prefix "doc:" \
+  --search-algorithm HNSW \
+  --ef-search 100 \
   -k 10 \
   -t vec-query \
   -n 10000
@@ -746,8 +750,8 @@ Load vectors with category tags, then run filtered queries:
 # - 10% get "other"
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
+  --search-index myindex \
+  --search-prefix "doc:" \
   --tag-field category \
   --search-tags "electronics:30,clothing:25,home:20,sports:15,other:10" \
   -t vec-load \
@@ -756,8 +760,8 @@ Load vectors with category tags, then run filtered queries:
 # Step 3: Query with single tag filter
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
+  --search-index myindex \
+  --search-prefix "doc:" \
   --tag-field category \
   --tag-filter "electronics" \
   -k 10 \
@@ -767,8 +771,8 @@ Load vectors with category tags, then run filtered queries:
 # Step 4: Query with multiple tag filter (OR condition)
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
+  --search-index myindex \
+  --search-prefix "doc:" \
   --tag-field category \
   --tag-filter "electronics|clothing|home" \
   -k 10 \
@@ -784,8 +788,8 @@ For scenarios with many unique tag values:
 # Load vectors with random category IDs (high cardinality)
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
+  --search-index myindex \
+  --search-prefix "doc:" \
   --tag-field user_id \
   --search-tags "user__rand_int__:100" \
   -t vec-load \
@@ -839,11 +843,11 @@ Add numeric fields with configurable distributions. The benchmark automatically 
   --numeric-field-config "created_at:unix_timestamp:uniform:1672531200:1735689600" \
   -n 100000 -c 50 --threads 4
 
-# Use --clean to drop existing index and recreate
+# Use --cleanup to drop existing index after benchmark
 ./valkey-search-benchmark -h localhost --cluster -t vec-load \
   --dataset products.bin \
   --search-index product_idx \
-  --clean \
+  --cleanup \
   ...
 ```
 

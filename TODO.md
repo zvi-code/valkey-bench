@@ -5,17 +5,17 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 ## Rust rewrite TODO's
 
 ### 1. Make sure optimizer works for all kinds of target goals
-**Status:** Planned
+**Status:** Done (need to fix the recall optimization, do dataset will not re-run)
 **Description:** support client+thread optimal point for latency, for qps, for latency&qps. For search workloads
 **Benefits:** 
 
 ### 2. Tags support
-**Status:** Planned
+**Status:** Done
 **Description:** Import functionality from c code
 **Benefits:** 
 
 ### 3. Search-workload: Pin ground truth vectors
-**Status:** Planned
+**Status:** Done
 **Description:** Hold a bool map to check if vector is ground truth or not. If it is, do not evict it from memory
 **Benefits:** 
 
@@ -25,7 +25,117 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 **Benefits:** Test scenarios involving data expiration and cache eviction.
 
 
+I provided this perspective:
+```bash
+Additional perspective to how i view the abstraction goals of the benchmark and the different parts. We have several dimentions: 
+- (Imutable) type of cluster : valkey open-source, Elasticache valkey, serverless valkey, memorydb
+  - each could have slitely different info\ft.info fields and command formats (mostly they are compatible, but for example, LOCALONLY flag in vec-query (FT.SEARCH command) is only availiable for valkey based engine - not in memorydb, or prior ElastiCache redis)
+  - some metrics are availiable only in new engine version (but backwards compatability can be assumed)
+- (Imutable) cluster mode enabled\disabled
+- (Mutable) cluster topology: number of replicas, number of shards (can change during the wokload)
+- Data: The data used to ingest, this will include data sources, could be generated\loaded\pre-defined, and includes data properties depending on the source\generation method
+- Addrassable space: the format and properties of the key space we operate on, this should be able to extend to fields in hash, or pubsub channels or json addressable object, or db in multi-db
+- The iterators: how the loader operates over the addressable space: sequntial\random of a given range are just an example of this, we could also limit\direct specific sub-space or even consume working address space from previous phase. Illustration example(not implemented), for delete, we might scan for keys and chose randomly subset of the key-space for the delete workload
+- <Workload>: What valkey's API's are we triggering in the load and include preconfiguration of the cluster, precondition, and running <Workload> that can be recursibely defined
+<Workload>:=Pre-configure, Prepare, Run([Workload]), Post, Post-configure - this is the conceptual idea
 
+Lastly, the next phase will also be to 
+- combine commands that run in paraller (at the same time, to simulate real customer workload) 
+- have action chain defined, to execute internally dependant logic [like real application]
+
+Finally, the benchmark needs to provide the tooling for performance evaluation of various workloads, some complicated application logic simulation will be done in a wrappers that will consume the benchmark as an execution tool of the higher level logic - need to find the right functionality balance.
+```
+You answerred with:
+```markdown
+How Current Refactoring Maps to Your Dimensions
+Your Dimension	Current Abstraction	Status
+Cluster Type	EngineType enum (partial)	Detects engine, but doesn't abstract command differences
+Cluster Mode	ClusterTopology (Option)	Implicit - present or absent
+Topology	TopologyManager	Handles refresh, but not shard/replica dynamics
+Data	DataSource, VectorDataSource traits	Just added - good foundation
+Addressable Space	KeyFormat	Limited to keys with optional cluster tags
+Iterators	Embedded in WorkloadContext	Partially decoupled - claim_next_id(), next_dataset_idx()
+Workload	WorkloadType enum + WorkloadContext trait	Single-phase, no composition
+```
+
+Suggested Evolution
+1. Decompose WorkloadContext Further
+Currently WorkloadContext conflates three concerns:
+
+// Current: mixed responsibilities
+pub trait WorkloadContext: Send {
+    fn claim_next_id(...);      // Iterator
+    fn get_vector_bytes(...);   // Data access
+    fn compute_and_record_recall(...);  // Metrics
+}
+Could become:
+
+// Iterator abstraction (your "Iterators" dimension)
+pub trait AddressIterator: Send {
+    fn next(&self, counters: &GlobalCounters) -> Option<Address>;
+    fn reset(&self);
+}
+
+// Address space abstraction (your "Addressable Space" dimension)  
+pub trait Address {
+    fn key_bytes(&self) -> &[u8];
+    fn slot(&self) -> Option<u16>;
+}
+
+// Workload remains focused on command semantics + metrics
+pub trait WorkloadContext: Send {
+    fn iterator(&self) -> &dyn AddressIterator;
+    fn data_source(&self) -> Option<&dyn DataSource>;
+    fn process_response(&mut self, response: &RespValue);
+    fn take_metrics(&mut self) -> WorkloadMetrics;
+}
+2. Engine/Platform Trait
+For your cluster type differences:
+
+pub trait Platform: Send + Sync {
+    fn engine_type(&self) -> EngineType;
+    fn supports_localonly(&self) -> bool;
+    fn ft_info_fields(&self) -> &[&str];
+    fn backfill_metric_name(&self) -> &str;
+    // ... command variations
+}
+3. Recursive Workload Definition
+Your Pre-configure, Prepare, Run([Workload]), Post, Post-configure maps to a workflow:
+
+pub enum Phase {
+    Configure(ConfigAction),
+    Run(Box<dyn Workload>),
+    Parallel(Vec<Box<dyn Workload>>),  // Your "combine commands" goal
+    Sequence(Vec<Phase>),
+}
+
+pub trait Workload {
+    fn phases(&self) -> Vec<Phase>;
+    fn name(&self) -> &str;
+}
+Where to Draw the Line
+Your observation about "functionality balance" is key. I'd suggest: Keep in benchmark tool:
+Low-level execution (connections, pipelining, event loop)
+Single-phase workload execution
+Metrics collection and aggregation
+Basic iterators (sequential, random, scan-based)
+Push to wrapper layer:
+Multi-phase orchestration
+Complex application logic simulation
+Cross-phase data dependencies
+Realistic mixed workload generation
+The benchmark becomes a building block that wrappers compose.
+Immediate Next Steps (if continuing)
+Extract AddressIterator trait from WorkloadContext - enables your scan-then-delete example
+Add Platform trait - handles engine-specific command variations
+Parallel workload support - run multiple WorkloadContexts concurrently with configurable ratios
+The refactoring I completed provides a foundation. The WorkloadContext pattern can be further decomposed as you add the iterator and addressable space abstractions. Does this align with your thinking? Would you like to explore any of these directions?
+
+I had additional notes\requirments for numeric and tag filters support:
+- This bug is a good example to why the code duplication in `fill_placeholders_[for|with_key]` is so bad
+
+
+- ./target/release/valkey-search-benchmark -h zvi-vss-16xl.ajfdds.clustercfg.euw1devo.cache.amazonaws.com --cluster -t vec-query --dataset /data/valkey-bench-glide/valkey-search-bench/datasets/mnist.bin -k 10 --optimize --tune clients:20:100:20 --tune threads:1:16:2 -n 5000
 
 ## Loader Enhancements
 

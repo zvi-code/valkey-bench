@@ -268,7 +268,6 @@ Decoding:
 |  | primary        | Only primary nodes (default)                      |
 |  | prefer-replica | Prefer replicas, fallback to primary              |
 |  | round-robin    | Distribute across all nodes                       |
-|  | az-affinity    | Prefer same availability zone                     |
 |  +---------------------------+                                         |
 |                                                                        |
 +------------------------------------------------------------------------+
