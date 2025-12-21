@@ -152,7 +152,7 @@ fn create_mset_template(
 /// Fields added:
 /// - vector_field: <vector data> (always)
 /// - tag_field: <tag value> (if search_config.tag_field is set)
-/// - numeric_field: <numeric value> (if search_config.numeric_field is set)
+/// - numeric_field(s): <numeric value> (from search_config.numeric_fields)
 fn create_vec_load_template(search_config: &SearchConfig, key_width: usize) -> CommandTemplate {
     // Key format: prefix + cluster_tag + ":" + vector_id
     // We use a compound key with cluster tag for proper shard distribution
@@ -169,11 +169,11 @@ fn create_vec_load_template(search_config: &SearchConfig, key_width: usize) -> C
             .arg_tag_placeholder(search_config.tag_max_len);
     }
 
-    // Add numeric field if configured
-    if let Some(ref numeric_field) = search_config.numeric_field {
+    // Add numeric fields from the NumericFieldSet
+    for (idx, field_config) in search_config.numeric_fields.iter().enumerate() {
         template = template
-            .arg_str(numeric_field)
-            .arg_numeric_placeholder();
+            .arg_str(&field_config.name)
+            .arg_numeric_field(idx, field_config.max_byte_len());
     }
 
     template
@@ -232,6 +232,7 @@ fn create_vec_query_template(search_config: &SearchConfig) -> CommandTemplate {
 mod tests {
     use super::*;
     use crate::config::{DistanceMetric, VectorAlgorithm};
+    use crate::workload::NumericFieldSet;
 
     #[test]
     fn test_create_ping_template() {
@@ -281,6 +282,7 @@ mod tests {
             tag_filter: None,
             tag_max_len: 128,
             numeric_field: None,
+            numeric_fields: NumericFieldSet::new(),
         };
 
         let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config), false);

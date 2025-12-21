@@ -26,7 +26,7 @@ use crate::metrics::snapshot::{ClusterSnapshot, SnapshotBuilder};
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
-    create_index, create_template, drop_index, get_index_info, WorkloadType,
+    create_index, create_template, create_workload_context, drop_index, get_index_info, NumericFieldSet, WorkloadType,
 };
 
 /// Keyspace hit/miss statistics from INFO stats
@@ -817,16 +817,44 @@ impl Orchestrator {
         // Clone topology for thread sharing
         let topology = self.cluster_topology.clone();
 
+        // Get k and key_prefix for workload context creation
+        let k = self.config.search_config.as_ref().map(|sc| sc.k as usize).unwrap_or(10);
+        let key_prefix = self.config.search_config.as_ref()
+            .map(|sc| sc.prefix.as_str())
+            .unwrap_or(&self.config.key_prefix);
+
+        // Get tag distributions for tag field generation (passed to workload context)
+        let tag_distributions = self.config.search_config.as_ref()
+            .and_then(|sc| sc.tag_distributions.clone());
+
+        // Get numeric field configurations
+        let numeric_fields = self.config.search_config.as_ref()
+            .map(|sc| sc.numeric_fields.clone())
+            .unwrap_or_else(NumericFieldSet::new);
+
         for worker_id in 0..self.config.threads as usize {
             let config = Arc::clone(&self.config);
             let counters = Arc::clone(&counters);
-            let dataset = self.dataset.clone();
             let buffer = command_buffer.clone();
             let addrs = addresses.clone();
             let topo = topology.clone();
-            let tag_map = self.cluster_tag_map.clone();
-            let protected = self.protected_ids.clone();
-            let wl_type = workload;
+            let worker_tag_dist = tag_distributions.clone();
+            let worker_numeric_fields = numeric_fields.clone();
+
+            // Create workload context for this worker
+            let workload_ctx = create_workload_context(
+                workload,
+                self.dataset.clone(),
+                self.cluster_tag_map.clone(),
+                self.protected_ids.clone(),
+                worker_tag_dist,
+                worker_numeric_fields,
+                self.config.keyspace_len,
+                self.config.sequential,
+                self.config.seed.wrapping_add(worker_id as u64),
+                k,
+                key_prefix,
+            );
 
             let handle = thread::Builder::new()
                 .name(format!("event-worker-{}", worker_id))
@@ -839,11 +867,9 @@ impl Orchestrator {
                         &config,
                         buffer,
                         topo.as_ref(),
-                        tag_map,
-                        protected,
-                        wl_type,
+                        workload_ctx,
                     ) {
-                        Ok(worker) => worker.run(counters, dataset),
+                        Ok(worker) => worker.run(counters),
                         Err(e) => {
                             if !config.quiet {
                                 eprintln!("Worker {}: Failed to create: {}", worker_id, e);

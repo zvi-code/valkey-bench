@@ -78,12 +78,11 @@ impl RecallStats {
     }
 }
 
-use crate::client::{CommandBuffer, PlaceholderOffset, PlaceholderType};
-use crate::cluster::{ClusterTagMap, ClusterTopology, ProtectedVectorIds};
+use crate::client::{CommandBuffer, PlaceholderType};
+use crate::cluster::ClusterTopology;
 use crate::config::BenchmarkConfig;
-use crate::dataset::DatasetContext;
-use crate::utils::{RespDecoder, RespValue};
-use crate::workload::{extract_numeric_ids, parse_search_response, WorkloadType};
+use crate::utils::RespValue;
+use crate::workload::{WorkloadContext, WorkloadMetrics};
 use std::sync::Arc;
 
 /// CRC16 implementation for Redis cluster slot calculation (XMODEM)
@@ -471,24 +470,14 @@ pub struct EventWorker {
     events: Events,
     rng: fastrand::Rng,
     histogram: Histogram<u64>,
-    recall_stats: RecallStats,
     pipeline: usize,
-    keyspace_len: u64,
-    sequential: bool,
     /// Seed for deterministic random key generation
     seed: u64,
     command_template: CommandBuffer,
-    key_prefix: String,
-    k: usize,
-    compute_recall: bool,
     error_count: u64,
     requests_processed: u64,
-    /// Cluster tag map for partial prefill (skip existing vectors)
-    tag_map: Option<Arc<ClusterTagMap>>,
-    /// Protected vector IDs (ground truth vectors to skip during deletion)
-    protected_ids: Option<Arc<ProtectedVectorIds>>,
-    /// Workload type (for vec-load skip logic)
-    workload_type: WorkloadType,
+    /// Workload-specific context (handles ID claiming, recall computation, etc.)
+    workload_ctx: Box<dyn WorkloadContext>,
     /// Slot to node address mapping (built from topology)
     slot_to_node: Option<Box<[(String, u16); 16384]>>,
     /// Key prefix for regular keys (for slot calculation)
@@ -511,9 +500,7 @@ impl EventWorker {
     /// * `config` - Benchmark configuration
     /// * `command_template` - Pre-built command template
     /// * `topology` - Optional cluster topology for slot-aware routing
-    /// * `tag_map` - Optional cluster tag map for partial prefill support
-    /// * `protected_ids` - Optional protected vector IDs (for vec-delete skip logic)
-    /// * `workload_type` - Workload type (for vec-load/vec-delete skip logic)
+    /// * `workload_ctx` - Workload-specific context for ID claiming, recall, etc.
     pub fn new(
         id: usize,
         addresses: Vec<(String, u16)>,
@@ -521,9 +508,7 @@ impl EventWorker {
         config: &BenchmarkConfig,
         command_template: CommandBuffer,
         topology: Option<&ClusterTopology>,
-        tag_map: Option<Arc<ClusterTagMap>>,
-        protected_ids: Option<Arc<ProtectedVectorIds>>,
-        workload_type: WorkloadType,
+        workload_ctx: Box<dyn WorkloadContext>,
     ) -> io::Result<Self> {
         let poll = Poll::new()?;
         let mut clients = Vec::new();
@@ -613,13 +598,6 @@ impl EventWorker {
         let histogram =
             Histogram::new_with_bounds(1, 3_600_000_000, 3).expect("Failed to create histogram");
 
-        // Recall config
-        let (compute_recall, key_prefix, k) = if let Some(ref sc) = config.search_config {
-            (true, sc.prefix.clone(), sc.k as usize)
-        } else {
-            (false, String::new(), 0)
-        };
-
         // Build global ready queue with all client indices
         let global_ready_queue: VecDeque<usize> = (0..clients.len()).collect();
 
@@ -639,20 +617,12 @@ impl EventWorker {
             events: Events::with_capacity(1024),
             rng,
             histogram,
-            recall_stats: RecallStats::new(),
             pipeline: config.pipeline as usize,
-            keyspace_len: config.keyspace_len,
-            sequential: config.sequential,
             seed: config.seed,
             command_template,
-            key_prefix,
-            k,
-            compute_recall,
             error_count: 0,
             requests_processed: 0,
-            tag_map,
-            protected_ids,
-            workload_type,
+            workload_ctx,
             slot_to_node,
             regular_key_prefix: config.key_prefix.clone(),
             node_ready_queues,
@@ -764,15 +734,9 @@ impl EventWorker {
 
     /// Generate next key number (sequential or random)
     ///
-    /// For random mode, uses a global atomic counter with deterministic mixing
-    /// to ensure SET and GET with the same seed access the exact same keys.
+    /// Delegates to workload context for ID claiming.
     fn next_key_num(&self, counters: &GlobalCounters) -> u64 {
-        if self.sequential {
-            counters.next_seq_key(self.keyspace_len)
-        } else {
-            // Use deterministic random key generation via global counter
-            counters.next_random_key(self.seed, self.keyspace_len)
-        }
+        self.workload_ctx.claim_next_id(counters).unwrap_or(0)
     }
 
     /// Try to start a request with slot-aware routing
@@ -780,42 +744,41 @@ impl EventWorker {
     fn try_start_slot_aware_request(
         &mut self,
         counters: &GlobalCounters,
-        dataset: Option<&DatasetContext>,
     ) -> bool {
         // First try to get any ready client
         // Try the slot-specific path first (most likely to succeed)
         // Generate a "peek" key number - we'll commit to it only if we find a client
-        
+
         // OPTIMIZATION: Check if any node queues have clients before generating key
         let has_ready_clients = self.node_ready_queues.values().any(|q| !q.is_empty());
         if !has_ready_clients {
             return false;
         }
-        
+
         // Generate key number - only now that we know we have clients
         let key_num = self.next_key_num(counters);
-        
+
         // Build key and calculate slot
         let key_bytes = self.build_key_bytes(key_num);
         let slot = self.slot_for_key(&key_bytes);
-        
+
         // Try to get client for this slot's node first
         if let Some(client_idx) = self.pop_ready_client_for_slot(slot) {
-            self.fill_placeholders_with_key(client_idx, key_num, counters, dataset);
+            self.fill_placeholders_with_key(client_idx, key_num, counters);
             self.clients[client_idx].start_request();
             let _ = self.clients[client_idx].try_write();
             return true;
         }
-        
+
         // No client for this specific slot's node, try any available client
         // This may cause a MOVED redirect, but it's better than losing work
         if let Some(client_idx) = self.pop_any_ready_client() {
-            self.fill_placeholders_with_key(client_idx, key_num, counters, dataset);
+            self.fill_placeholders_with_key(client_idx, key_num, counters);
             self.clients[client_idx].start_request();
             let _ = self.clients[client_idx].try_write();
             return true;
         }
-        
+
         // This shouldn't happen if has_ready_clients was true, but handle it
         // The key_num is lost in this case, but it's a race condition edge case
         false
@@ -826,57 +789,48 @@ impl EventWorker {
         &mut self,
         client_idx: usize,
         key_num: u64,
-        counters: &GlobalCounters,
-        dataset: Option<&DatasetContext>,
+        _counters: &GlobalCounters,
     ) {
         for (cmd_idx, phs) in self.command_template.placeholders.iter().enumerate() {
             for ph in phs {
                 let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
                 match ph.placeholder_type {
                     PlaceholderType::Key => {
-                        // VecDelete: key_num is the deleteable vector ID
-                        if matches!(self.workload_type, WorkloadType::VecDelete) {
+                        // For VecDelete: key is directly the claimed ID
+                        // For dataset workloads: key is set by Vector handler
+                        // For simple workloads: key is the key_num
+                        if self.workload_ctx.key_is_claimed_id() {
                             write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
-                        } else if dataset.is_some() {
-                            continue; // Set with Vector
+                        } else if self.workload_ctx.uses_dataset_keys() {
+                            continue; // Key will be set by Vector handler
                         } else {
-                            // Use the pre-determined key
                             write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
                         }
                     }
                     PlaceholderType::Vector => {
-                        if let Some(ds) = dataset {
-                            let idx = if matches!(self.workload_type, WorkloadType::VecLoad) {
-                                if let Some(ref tm) = self.tag_map {
-                                    match tm.claim_unmapped_id(ds.num_vectors()) {
-                                        Some(id) => id,
-                                        None => return,
-                                    }
-                                } else {
-                                    counters.next_dataset_idx() % ds.num_vectors()
-                                }
-                            } else {
-                                counters.next_dataset_idx() % ds.num_vectors()
-                            };
-                            let vec_bytes = ds.get_vector_bytes(idx);
+                        // Use key_num as the vector index - it was already claimed via claim_next_id
+                        if let Some(vec_bytes) = self.workload_ctx.get_vector_bytes(key_num) {
                             self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
                                 .copy_from_slice(vec_bytes);
+                            // Also set the Key placeholder with the vector ID
                             for ph2 in phs {
                                 if matches!(ph2.placeholder_type, PlaceholderType::Key) {
                                     let key_offset = self.command_template.absolute_offset(cmd_idx, ph2.offset);
-                                    write_fixed_width_u64(&mut self.clients[client_idx].write_buf, key_offset, idx, ph2.len);
+                                    write_fixed_width_u64(&mut self.clients[client_idx].write_buf, key_offset, key_num, ph2.len);
                                     break;
                                 }
                             }
                         }
                     }
                     PlaceholderType::QueryVector => {
-                        if let Some(ds) = dataset {
-                            let idx = self.rng.u64(0..ds.num_queries());
-                            let vec_bytes = ds.get_query_bytes(idx);
-                            self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
-                                .copy_from_slice(vec_bytes);
-                            self.clients[client_idx].query_indices.push_back(idx);
+                        let num_queries = self.workload_ctx.num_queries();
+                        if num_queries > 0 {
+                            let idx = self.rng.u64(0..num_queries);
+                            if let Some(vec_bytes) = self.workload_ctx.get_query_bytes(idx) {
+                                self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
+                                    .copy_from_slice(vec_bytes);
+                                self.clients[client_idx].query_indices.push_back(idx);
+                            }
                         }
                     }
                     PlaceholderType::RandInt => {
@@ -885,7 +839,6 @@ impl EventWorker {
                     }
                     PlaceholderType::ClusterTag => {
                         // Generate deterministic cluster tag from key_num
-                        // This ensures SET and GET with same seed access same keys
                         let tag = Self::deterministic_cluster_tag(
                             self.seed,
                             key_num,
@@ -894,20 +847,23 @@ impl EventWorker {
                         self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
                     }
                     PlaceholderType::Tag => {
-                        // Tag placeholder - generate from distribution or use empty
-                        // Tags are comma-separated and padded to max length
+                        // Delegate tag generation to workload context
                         let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
-                        // Fill with commas (padding character)
-                        buf.fill(b',');
+                        self.workload_ctx.fill_tag_placeholder(key_num, buf);
                     }
                     PlaceholderType::Numeric => {
-                        // Numeric placeholder - write vector ID or random value
                         write_fixed_width_u64(
                             &mut self.clients[client_idx].write_buf,
                             offset,
                             key_num,
                             ph.len,
                         );
+                    }
+                    PlaceholderType::NumericField(field_idx) => {
+                        // Delegate numeric field generation to workload context
+                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
+                        // Use key_num as both key-based seed and seq_counter for now
+                        self.workload_ctx.fill_numeric_field(field_idx, key_num, key_num, buf);
                     }
                 }
             }
@@ -963,7 +919,6 @@ impl EventWorker {
     pub fn run(
         mut self,
         counters: Arc<GlobalCounters>,
-        dataset: Option<Arc<DatasetContext>>,
     ) -> EventWorkerResult {
         let batch_size = self.pipeline as u64;
         let slot_aware = self.needs_slot_routing();
@@ -973,7 +928,7 @@ impl EventWorker {
             // For slot-aware: try to start as many requests as possible
             while counters.claim_batch(batch_size).is_some() {
                 self.apply_rate_limit();
-                if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
+                if !self.try_start_slot_aware_request(&counters) {
                     // No ready client available, undo the claim
                     // (counters don't support undo, so we'll just break)
                     break;
@@ -988,7 +943,7 @@ impl EventWorker {
                     break;
                 }
                 self.apply_rate_limit();
-                self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
+                self.fill_placeholders_for(client_idx, &counters);
                 self.clients[client_idx].start_request();
             }
         }
@@ -1061,25 +1016,20 @@ impl EventWorker {
                                     self.clients[client_idx].responses.len() as u64,
                                 );
 
-                                // Compute recall for vector queries
-                                if self.compute_recall {
-                                    if let Some(ref ds) = dataset {
-                                        // Collect query indices first to avoid borrow conflict
-                                        let query_indices: Vec<u64> = self.clients[client_idx]
-                                            .query_indices
-                                            .drain(..)
-                                            .collect();
+                                // Compute recall for vector queries (if query indices present)
+                                if !self.clients[client_idx].query_indices.is_empty() {
+                                    // Collect query indices first to avoid borrow conflict
+                                    let query_indices: Vec<u64> = self.clients[client_idx]
+                                        .query_indices
+                                        .drain(..)
+                                        .collect();
 
-                                        for (response, query_idx) in self.clients[client_idx]
-                                            .responses
-                                            .iter()
-                                            .zip(query_indices.iter())
-                                        {
-                                            let doc_ids = parse_search_response(response);
-                                            let result_ids = extract_numeric_ids(&doc_ids, &self.key_prefix);
-                                            let recall = ds.compute_recall(*query_idx, &result_ids, self.k);
-                                            self.recall_stats.record(recall);
-                                        }
+                                    for (response, query_idx) in self.clients[client_idx]
+                                        .responses
+                                        .iter()
+                                        .zip(query_indices.iter())
+                                    {
+                                        self.workload_ctx.compute_and_record_recall(*query_idx, response);
                                     }
                                 }
 
@@ -1094,11 +1044,7 @@ impl EventWorker {
                                     // Non-slot-aware: reuse client directly
                                     if counters.claim_batch(batch_size).is_some() {
                                         self.apply_rate_limit();
-                                        self.fill_placeholders_for(
-                                            client_idx,
-                                            &counters,
-                                            dataset.as_deref(),
-                                        );
+                                        self.fill_placeholders_for(client_idx, &counters);
                                         self.clients[client_idx].start_request();
                                         // Immediately try to write (socket likely writable)
                                         let _ = self.clients[client_idx].try_write();
@@ -1129,7 +1075,7 @@ impl EventWorker {
                         break;
                     }
                     self.apply_rate_limit();
-                    if !self.try_start_slot_aware_request(&counters, dataset.as_deref()) {
+                    if !self.try_start_slot_aware_request(&counters) {
                         // No ready client, break (work still claimed, will be retried)
                         break;
                     }
@@ -1146,17 +1092,23 @@ impl EventWorker {
                         break;
                     }
                     self.apply_rate_limit();
-                    self.fill_placeholders_for(client_idx, &counters, dataset.as_deref());
+                    self.fill_placeholders_for(client_idx, &counters);
                     self.clients[client_idx].start_request();
                     let _ = self.clients[client_idx].try_write();
                 }
             }
         }
 
+        // Get recall stats from workload context
+        let recall_stats = match self.workload_ctx.take_metrics() {
+            WorkloadMetrics::Recall(stats) => stats,
+            WorkloadMetrics::None => RecallStats::new(),
+        };
+
         EventWorkerResult {
             worker_id: self.id,
             histogram: self.histogram,
-            recall_stats: self.recall_stats,
+            recall_stats,
             redirect_count: 0,
             topology_refresh_count: 0,
             error_count: self.error_count,
@@ -1169,132 +1121,15 @@ impl EventWorker {
         &mut self,
         client_idx: usize,
         counters: &GlobalCounters,
-        dataset: Option<&DatasetContext>,
     ) {
-        // Pre-generate key number for deterministic key and cluster tag generation
-        // This ensures SET and GET with same seed produce identical full keys
-        //
-        // For VecDelete with protected_ids: use claim_deleteable_id() to skip ground truth vectors
-        let key_num = if matches!(self.workload_type, WorkloadType::VecDelete) {
-            if let Some(ref pids) = self.protected_ids {
-                // Claim next deleteable vector ID (skips ground truth)
-                match pids.claim_deleteable_id() {
-                    Some(id) => id,
-                    None => {
-                        // All deleteable vectors processed
-                        return;
-                    }
-                }
-            } else if let Some(ds) = dataset {
-                // No protected IDs, use sequential dataset index
-                counters.next_dataset_idx() % ds.num_vectors()
-            } else {
-                self.next_key_num(counters)
-            }
-        } else if dataset.is_none() {
-            self.next_key_num(counters)
-        } else {
-            0 // Will be overwritten by vector/dataset index
+        // Get key number from workload context (claim once, use consistently)
+        let key_num = match self.workload_ctx.claim_next_id(counters) {
+            Some(id) => id,
+            None => return, // No more IDs available
         };
 
-        // Fill placeholders in write buffer
-        for (cmd_idx, phs) in self.command_template.placeholders.iter().enumerate() {
-            for ph in phs {
-                let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
-                match ph.placeholder_type {
-                    PlaceholderType::Key => {
-                        // VecDelete: key_num is the deleteable vector ID (already computed above)
-                        if matches!(self.workload_type, WorkloadType::VecDelete) {
-                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
-                        } else if dataset.is_some() {
-                            continue; // Set with Vector - key will be set by Vector handler
-                        } else {
-                            // Use pre-generated key for reproducible keyspace
-                            write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, key_num, ph.len);
-                        }
-                    }
-                    PlaceholderType::Vector => {
-                        if let Some(ds) = dataset {
-                            // For vec-load, use claim_unmapped_id to skip existing vectors
-                            let idx = if matches!(self.workload_type, WorkloadType::VecLoad) {
-                                if let Some(ref tm) = self.tag_map {
-                                    // Claim next unmapped vector ID (skips existing)
-                                    match tm.claim_unmapped_id(ds.num_vectors()) {
-                                        Some(id) => id,
-                                        None => {
-                                            // All vectors loaded, skip this command
-                                            // Mark client as done by clearing pending
-                                            return;
-                                        }
-                                    }
-                                } else {
-                                    counters.next_dataset_idx() % ds.num_vectors()
-                                }
-                            } else {
-                                counters.next_dataset_idx() % ds.num_vectors()
-                            };
-                            let vec_bytes = ds.get_vector_bytes(idx);
-                            self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
-                                .copy_from_slice(vec_bytes);
-                            // Set key to match
-                            for ph2 in phs {
-                                if matches!(ph2.placeholder_type, PlaceholderType::Key) {
-                                    let key_offset =
-                                        self.command_template.absolute_offset(cmd_idx, ph2.offset);
-                                    write_fixed_width_u64(
-                                        &mut self.clients[client_idx].write_buf,
-                                        key_offset,
-                                        idx,
-                                        ph2.len,
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    PlaceholderType::QueryVector => {
-                        if let Some(ds) = dataset {
-                            let idx = self.rng.u64(0..ds.num_queries());
-                            let vec_bytes = ds.get_query_bytes(idx);
-                            self.clients[client_idx].write_buf[offset..offset + vec_bytes.len()]
-                                .copy_from_slice(vec_bytes);
-                            // Store query index for recall computation
-                            self.clients[client_idx].query_indices.push_back(idx);
-                        }
-                    }
-                    PlaceholderType::RandInt => {
-                        let value = self.rng.u64(..);
-                        write_fixed_width_u64(&mut self.clients[client_idx].write_buf, offset, value, ph.len);
-                    }
-                    PlaceholderType::ClusterTag => {
-                        // Generate deterministic cluster tag from key_num
-                        // This ensures SET and GET with same seed access same keys
-                        let tag = Self::deterministic_cluster_tag(
-                            self.seed,
-                            key_num,
-                            |slot| self.clients[client_idx].owns_slot(slot),
-                        );
-                        self.clients[client_idx].write_buf[offset..offset + 5].copy_from_slice(&tag);
-                    }
-                    PlaceholderType::Tag => {
-                        // Tag placeholder - generate from distribution or use empty
-                        // Tags are comma-separated and padded to max length
-                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
-                        // Fill with commas (padding character)
-                        buf.fill(b',');
-                    }
-                    PlaceholderType::Numeric => {
-                        // Numeric placeholder - write vector ID or random value
-                        write_fixed_width_u64(
-                            &mut self.clients[client_idx].write_buf,
-                            offset,
-                            key_num,
-                            ph.len,
-                        );
-                    }
-                }
-            }
-        }
+        // Delegate to the unified implementation
+        self.fill_placeholders_with_key(client_idx, key_num, counters);
     }
 }
 

@@ -4,12 +4,14 @@
 //! The dataset file is mapped into memory read-only, and vectors are accessed
 //! directly from the mapped memory without any copying.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
 use memmap2::Mmap;
 
 use super::header::{DatasetHeader, DistanceMetricId, DATASET_MAGIC, HEADER_SIZE};
+use super::source::{DataSource, VectorDataSource};
 use crate::utils::DatasetError;
 
 /// Memory-mapped dataset context
@@ -316,6 +318,42 @@ impl DatasetContext {
             self.distance_metric.as_str(),
             self.vec_byte_len
         )
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl DataSource for DatasetContext {
+    fn num_items(&self) -> u64 {
+        self.num_vectors
+    }
+
+    fn get_item_bytes(&self, idx: u64) -> &[u8] {
+        self.get_vector_bytes(idx)
+    }
+
+    fn item_byte_len(&self) -> usize {
+        self.vec_byte_len
+    }
+}
+
+impl VectorDataSource for DatasetContext {
+    fn num_queries(&self) -> u64 {
+        self.num_queries
+    }
+
+    fn get_query_bytes(&self, idx: u64) -> &[u8] {
+        DatasetContext::get_query_bytes(self, idx)
+    }
+
+    fn compute_recall(&self, query_idx: u64, result_ids: &[u64], k: usize) -> f64 {
+        DatasetContext::compute_recall(self, query_idx, result_ids, k)
+    }
+
+    fn get_ground_truth_vector_ids(&self) -> HashSet<u64> {
+        DatasetContext::get_ground_truth_vector_ids(self)
     }
 }
 

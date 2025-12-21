@@ -39,8 +39,11 @@ pub enum PlaceholderType {
     RandInt,
     /// Tag field value (variable-length string, padded to max length)
     Tag,
-    /// Numeric field value (fixed-width decimal)
+    /// Numeric field value (fixed-width decimal) - backward compatibility
     Numeric,
+    /// Indexed numeric field with configurable type/distribution
+    /// The usize is the index into the NumericFieldSet
+    NumericField(usize),
 }
 
 /// Pre-computed command template with placeholder offsets

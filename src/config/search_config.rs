@@ -1,7 +1,7 @@
 //! Vector search configuration
 
 use super::cli::{CliArgs, DistanceMetric, VectorAlgorithm};
-use crate::workload::TagDistributionSet;
+use crate::workload::{NumericFieldConfig, NumericFieldSet, NumericValueType, TagDistributionSet};
 
 /// Vector search configuration
 #[derive(Debug, Clone)]
@@ -25,8 +25,10 @@ pub struct SearchConfig {
     pub tag_filter: Option<String>,
     /// Maximum tag payload length
     pub tag_max_len: usize,
-    /// Numeric field name (optional, for filtered search)
+    /// Numeric field name (optional, for filtered search) - backward compatibility
     pub numeric_field: Option<String>,
+    /// Extended numeric field configurations with types and distributions
+    pub numeric_fields: NumericFieldSet,
 }
 
 impl SearchConfig {
@@ -41,6 +43,26 @@ impl SearchConfig {
                 }
             }
         });
+
+        // Parse extended numeric field configurations
+        let mut numeric_fields = NumericFieldSet::new();
+        for config_str in &args.numeric_field_configs {
+            match NumericFieldConfig::parse(config_str) {
+                Ok(config) => numeric_fields.add(config),
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse --numeric-field-config '{}': {}", config_str, e);
+                }
+            }
+        }
+
+        // If no extended configs but simple --numeric-field is set, create a key-based config
+        if numeric_fields.is_empty() {
+            if let Some(ref field_name) = args.numeric_field {
+                // Create a simple key-based numeric field for backward compatibility
+                let config = NumericFieldConfig::new_key_based(field_name, 0.0, f64::MAX);
+                numeric_fields.add(config);
+            }
+        }
 
         Self {
             index_name: args.search_index.clone(),
@@ -59,6 +81,7 @@ impl SearchConfig {
             tag_filter: args.tag_filter.clone(),
             tag_max_len: args.tag_max_len,
             numeric_field: args.numeric_field.clone(),
+            numeric_fields,
         }
     }
 

@@ -203,8 +203,38 @@ pub struct CliArgs {
     pub tag_max_len: usize,
 
     /// Numeric field name in hash (for filtered search)
+    /// Simple format: just the field name (uses key_num as value)
     #[arg(long = "numeric-field")]
     pub numeric_field: Option<String>,
+
+    /// Extended numeric field configuration (can be repeated for multiple fields)
+    ///
+    /// Format: "name:type:distribution:params..."
+    ///
+    /// Types:
+    ///   int            - Integer values
+    ///   float          - Float with 6 decimal places (default)
+    ///   float:N        - Float with N decimal places (e.g., float:2)
+    ///   unix_timestamp - Unix timestamp (seconds since epoch)
+    ///   iso_datetime   - ISO 8601 datetime string
+    ///   date_only      - Date only (YYYY-MM-DD)
+    ///
+    /// Distributions:
+    ///   uniform:min:max        - Uniform random between min and max
+    ///   zipfian:skew:min:max   - Zipfian (power-law), skew typically 0.5-2.0
+    ///   normal:mean:stddev     - Normal/Gaussian distribution
+    ///   sequential:start:step  - Sequential values starting at start
+    ///   constant:value         - Fixed constant value
+    ///   key_based:min:max      - Derive from key number (deterministic)
+    ///
+    /// Examples:
+    ///   --numeric-field-config "price:float:uniform:0.99:999.99:2"
+    ///   --numeric-field-config "quantity:int:zipfian:1.5:1:1000"
+    ///   --numeric-field-config "rating:float:normal:4.0:0.5:1"
+    ///   --numeric-field-config "created:unix_timestamp:uniform:1672531200:1735689600"
+    ///   --numeric-field-config "views:int:sequential:0:1"
+    #[arg(long = "numeric-field-config", action = clap::ArgAction::Append)]
+    pub numeric_field_configs: Vec<String>,
 
     // ===== Dataset Options =====
     /// Path to binary dataset file

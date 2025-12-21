@@ -601,7 +601,8 @@ Vector datasets use a binary format with the following structure:
 | `--search-tags <DIST>` | Tag distribution for vec-load (see format below) | None |
 | `--tag-filter <FILTER>` | Tag filter for vec-query FT.SEARCH | None |
 | `--tag-max-len <N>` | Maximum tag field payload length | `128` |
-| `--numeric-field <NAME>` | Numeric field name in hash | None |
+| `--numeric-field <NAME>` | Simple numeric field (uses key_num as value) | None |
+| `--numeric-field-config <CFG>` | Extended numeric field (repeatable, see format below) | None |
 
 #### Tag Distribution Format
 
@@ -643,6 +644,63 @@ The `--tag-filter` option specifies the filter pattern for vec-query:
 This generates FT.SEARCH queries with the filter prefix:
 ```
 @tag_field:{electronics|clothing|home}=>[KNN 10 @embedding $BLOB]
+```
+
+#### Numeric Field Configuration Format
+
+The `--numeric-field-config` option enables adding numeric fields with various value types and distributions. Can be repeated for multiple fields.
+
+**Format:** `name:type:distribution:params...`
+
+**Value Types:**
+
+| Type | Description | Example Output |
+|------|-------------|----------------|
+| `int` | Integer values | `42`, `1000` |
+| `float` or `float:N` | Float with N decimal places (default 6) | `123.45` |
+| `unix_timestamp` | Unix timestamp (seconds since epoch) | `1703001234` |
+| `iso_datetime` | ISO 8601 datetime | `2024-12-19T15:30:45Z` |
+| `date_only` | Date only | `2024-12-19` |
+
+**Distributions:**
+
+| Distribution | Format | Description |
+|--------------|--------|-------------|
+| `uniform` | `uniform:min:max` | Uniform random between min and max |
+| `zipfian` | `zipfian:skew:min:max` | Power-law distribution (skew 0.5-2.0) |
+| `normal` | `normal:mean:stddev` | Normal/Gaussian distribution |
+| `sequential` | `sequential:start:step` | Sequential values |
+| `constant` | `constant:value` | Fixed constant value |
+| `key_based` | `key_based:min:max` | Derive from key number (deterministic) |
+
+**Examples:**
+
+```bash
+# Price field: float, uniform distribution $0.99-$999.99, 2 decimals
+--numeric-field-config "price:float:uniform:0.99:999.99:2"
+
+# Quantity: integer, zipfian (most values low, few high)
+--numeric-field-config "quantity:int:zipfian:1.5:1:1000"
+
+# Rating: float, normal distribution centered at 4.0
+--numeric-field-config "rating:float:normal:4.0:0.5:1"
+
+# Creation timestamp: Unix timestamp, uniform over 2 years
+--numeric-field-config "created_at:unix_timestamp:uniform:1672531200:1735689600"
+
+# Sequential ID: starting at 0, incrementing by 1
+--numeric-field-config "seq_id:int:sequential:0:1"
+
+# Constant value
+--numeric-field-config "version:int:constant:1"
+
+# Multiple fields in one command
+./valkey-search-benchmark -h HOST --cluster -t vec-load \
+  --dataset vectors.bin --search-prefix "vec:" --search-index idx \
+  --tag-field category --search-tags "electronics:40,clothing:30,books:30" \
+  --numeric-field-config "price:float:uniform:0.99:999.99:2" \
+  --numeric-field-config "quantity:int:zipfian:1.5:1:1000" \
+  --numeric-field-config "rating:float:normal:4.0:0.5:1"
 ```
 
 ### Vector Search Examples
@@ -736,17 +794,57 @@ For scenarios with many unique tag values:
 
 #### Vectors with Numeric Attributes
 
-Add numeric fields for range-based filtering:
+Add numeric fields with configurable distributions. The benchmark automatically creates the index if it doesn't exist:
 
 ```bash
-# Load vectors with numeric timestamp field
+# Load vectors with tag and numeric fields (index created automatically)
 ./valkey-search-benchmark -h localhost -p 6379 \
   --dataset vectors.bin \
-  --index-name myindex \
-  --prefix "doc:" \
-  --numeric-field timestamp \
+  --search-index myindex \
+  --search-prefix "doc:" \
+  --tag-field category \
+  --search-tags "electronics:40,clothing:30,books:30" \
+  --numeric-field-config "price:float:uniform:9.99:499.99:2" \
+  --numeric-field-config "rating:float:normal:4.0:0.5:1" \
   -t vec-load \
   -n 100000
+
+# Verify data was loaded correctly
+./valkey-search-benchmark --cli -h localhost KEYS "doc:*" | head -3
+./valkey-search-benchmark --cli -h localhost HMGET doc:{ABC}:000000000001 category price rating
+```
+
+**Complete Example with E-commerce Data:**
+
+```bash
+# Simulating a product catalog with:
+# - category (TAG): electronics 40%, accessories 30%, cables 30%
+# - price (NUMERIC): uniform $9.99-$499.99
+# - quantity (NUMERIC): zipfian distribution (most items low stock)
+# - rating (NUMERIC): normal distribution centered at 4.0
+# - created_at (NUMERIC): timestamps over 2 years
+#
+# The benchmark automatically creates the index with vector, tag, and numeric fields
+
+./valkey-search-benchmark -h localhost --cluster -t vec-load \
+  --dataset products.bin \
+  --search-prefix "product:" \
+  --search-index product_idx \
+  --search-vector-field embedding \
+  --tag-field category \
+  --search-tags "electronics:40,accessories:30,cables:30" \
+  --numeric-field-config "price:float:uniform:9.99:499.99:2" \
+  --numeric-field-config "quantity:int:zipfian:1.5:1:1000" \
+  --numeric-field-config "rating:float:normal:4.0:0.5:1" \
+  --numeric-field-config "created_at:unix_timestamp:uniform:1672531200:1735689600" \
+  -n 100000 -c 50 --threads 4
+
+# Use --clean to drop existing index and recreate
+./valkey-search-benchmark -h localhost --cluster -t vec-load \
+  --dataset products.bin \
+  --search-index product_idx \
+  --clean \
+  ...
 ```
 
 ## Architecture

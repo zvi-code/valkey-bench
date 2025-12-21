@@ -122,7 +122,7 @@ impl CommandTemplate {
         self
     }
 
-    /// Add numeric field placeholder (fixed-width decimal)
+    /// Add numeric field placeholder (fixed-width decimal) - backward compatibility
     ///
     /// Used for numeric attributes like timestamps or scores.
     /// Format: 12-digit decimal number.
@@ -130,6 +130,18 @@ impl CommandTemplate {
         self.args.push(TemplateArg::Placeholder {
             ph_type: PlaceholderType::Numeric,
             len: 12, // Fixed 12-digit width for numeric values
+        });
+        self
+    }
+
+    /// Add indexed numeric field placeholder with specified max length
+    ///
+    /// Used for numeric fields with configurable type and distribution.
+    /// The index references the field in the NumericFieldSet.
+    pub fn arg_numeric_field(mut self, field_idx: usize, max_len: usize) -> Self {
+        self.args.push(TemplateArg::Placeholder {
+            ph_type: PlaceholderType::NumericField(field_idx),
+            len: max_len,
         });
         self
     }

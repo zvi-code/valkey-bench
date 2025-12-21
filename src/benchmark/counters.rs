@@ -47,8 +47,8 @@ pub struct GlobalCounters {
 }
 
 impl GlobalCounters {
-    /// Create new counters initialized to zero (unlimited requests)
-    pub fn new() -> Self {
+    /// Base initialization with all counters at zero (internal helper)
+    fn base() -> Self {
         Self {
             requests_issued: AtomicU64::new(0),
             requests_finished: AtomicU64::new(0),
@@ -64,37 +64,25 @@ impl GlobalCounters {
         }
     }
 
+    /// Create new counters initialized to zero (unlimited requests)
+    pub fn new() -> Self {
+        Self::base()
+    }
+
     /// Create counters with a request limit
     pub fn with_requests(total: u64) -> Self {
         Self {
-            requests_issued: AtomicU64::new(0),
-            requests_finished: AtomicU64::new(0),
-            seq_key_counter: AtomicU64::new(0),
-            random_key_counter: AtomicU64::new(0),
-            dataset_counter: AtomicU64::new(0),
-            query_counter: AtomicU64::new(0),
-            error_count: AtomicU64::new(0),
-            shutdown: AtomicBool::new(false),
-            start_time: None,
-            duration_limit: None,
             total_requests: total,
+            ..Self::base()
         }
     }
 
     /// Create counters with a duration limit (time-based benchmarking)
     pub fn with_duration(duration_secs: u64) -> Self {
         Self {
-            requests_issued: AtomicU64::new(0),
-            requests_finished: AtomicU64::new(0),
-            seq_key_counter: AtomicU64::new(0),
-            random_key_counter: AtomicU64::new(0),
-            dataset_counter: AtomicU64::new(0),
-            query_counter: AtomicU64::new(0),
-            error_count: AtomicU64::new(0),
-            shutdown: AtomicBool::new(false),
             start_time: Some(Instant::now()),
             duration_limit: Some(Duration::from_secs(duration_secs)),
-            total_requests: u64::MAX,
+            ..Self::base()
         }
     }
 
