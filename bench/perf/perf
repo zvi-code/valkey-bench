@@ -1,0 +1,595 @@
+#!/bin/bash
+
+set -e
+
+SCRIPT_NAME=$(basename "$0")
+FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-$HOME/FlameGraph}"
+DEBUG=${DEBUG:-0}
+
+debug() {
+    if [[ "$DEBUG" == "1" ]]; then
+        echo "[DEBUG] $*" >&2
+    fi
+}
+
+usage() {
+    cat << EOF
+Usage: $SCRIPT_NAME -h <host> <command> [options]
+
+Commands:
+  record <perf-args>          Record perf data remotely
+  report [perf-args]          View perf report (stdio mode)
+  report-save <file>          Save perf report to local file
+  script [perf-args]          Stream perf script output
+  script-save <file>          Save perf script to local file
+  top [perf-args]             Run perf top interactively
+  stat <perf-args>            Run perf stat and show results
+  thread-stats                Show per-thread CPU statistics (cycles, instructions)
+  thread-time                 Show per-thread on-CPU time and percentages
+  thread-cpu [seconds]        Show per-thread actual CPU utilization % (live)
+  flame <perf-args>           Generate flamegraph (saves to <host>-<timestamp>.svg)
+  flame-diff <new> <old>      Differential flamegraph from two perf.data files
+  annotate <symbol> [args]    Annotate specific symbol
+  interactive                 Open interactive perf report (requires X/TTY)
+  fetch <remote-path>         Fetch perf.data to local machine
+  clean                       Remove remote perf.data files
+
+Options:
+  -h <host>                   Remote host (required)
+  -u <user>                   SSH user (default: current user)
+  -o <output>                 Output file for flamegraphs (default: auto-generated)
+  -s                          Skip sudo on remote commands
+  -p <process>                Filter by process name (e.g., valkey-server)
+  -t <thread>                 Filter by thread name or prefix (e.g., io_thd, io_thd_*)
+  --tid <tid>                 Filter by specific thread ID
+
+Environment:
+  FLAMEGRAPH_DIR              Path to FlameGraph tools (default: ~/FlameGraph)
+
+Examples:
+
+=== BASIC PROFILING WORKFLOW ===
+
+  # 1. Quick system-wide profile
+  $SCRIPT_NAME -h server1 record -F 99 -a -g sleep 10
+  $SCRIPT_NAME -h server1 flame
+
+  # 2. Profile specific process (valkey-server)
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 10
+  $SCRIPT_NAME -h server1 -p valkey-server flame
+
+  # 3. View text report instead of flamegraph
+  $SCRIPT_NAME -h server1 -p valkey-server report
+
+=== THREAD-LEVEL ANALYSIS ===
+
+  # Profile single thread by name
+  $SCRIPT_NAME -h server1 -p valkey-server -t io_thd_1 record -F 99 -g sleep 10
+  $SCRIPT_NAME -h server1 -p valkey-server -t io_thd_1 flame
+
+  # Profile multiple threads (prefix match)
+  $SCRIPT_NAME -h server1 -p valkey-server -t 'io_thd_*' record -F 99 -g sleep 10
+  $SCRIPT_NAME -h server1 -p valkey-server -t 'io_thd_*' flame
+
+  # Profile by specific thread ID
+  $SCRIPT_NAME -h server1 --tid 12345 record -F 99 -g sleep 10
+
+  # Show per-thread CPU statistics
+  $SCRIPT_NAME -h server1 -p valkey-server thread-stats
+  
+  # Show per-thread on-CPU time percentages
+  $SCRIPT_NAME -h server1 -p valkey-server thread-time
+  
+  # Show live CPU utilization % per thread (10 second measurement)
+  $SCRIPT_NAME -h server1 -p valkey-server thread-cpu 10
+
+=== PERFORMANCE METRICS ===
+
+  # Quick performance stats (cycles, instructions, cache misses)
+  $SCRIPT_NAME -h server1 -p valkey-server stat sleep 5
+
+  # Detailed event counting
+  $SCRIPT_NAME -h server1 -p valkey-server stat -e cycles,instructions,cache-misses,cache-references sleep 10
+
+  # Per-thread performance counters
+  $SCRIPT_NAME -h server1 -p valkey-server -t io_thd_1 stat -e cycles,instructions sleep 5
+
+=== HOT FUNCTION ANALYSIS ===
+
+  # Generate flamegraph to identify hot paths
+  $SCRIPT_NAME -h server1 -p valkey-server flame
+
+  # View top functions in text format
+  $SCRIPT_NAME -h server1 -p valkey-server report | head -50
+
+  # Annotate specific hot function (assembly view)
+  $SCRIPT_NAME -h server1 -p valkey-server annotate functionName
+
+  # View disassembly with source (if available)
+  $SCRIPT_NAME -h server1 -p valkey-server annotate --source functionName
+
+=== COMPARING PROFILES ===
+
+  # Record baseline
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 30
+  $SCRIPT_NAME -h server1 fetch perf.data
+  mv perf.data baseline.perf.data
+
+  # Make changes, record again
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 30
+  $SCRIPT_NAME -h server1 fetch perf.data
+  mv perf.data optimized.perf.data
+
+  # Generate differential flamegraph
+  $SCRIPT_NAME -h server1 flame-diff optimized.perf.data baseline.perf.data
+
+=== ADVANCED USE CASES ===
+
+  # High frequency sampling (99Hz -> 999Hz)
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 999 -g sleep 10
+
+  # Sample specific CPU events
+  $SCRIPT_NAME -h server1 -p valkey-server record -e cycles -g sleep 10
+  $SCRIPT_NAME -h server1 -p valkey-server record -e cache-misses -g sleep 10
+
+  # Profile with dwarf call graph (more accurate, larger overhead)
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 --call-graph dwarf sleep 10
+
+  # Live monitoring (interactive TUI)
+  $SCRIPT_NAME -h server1 -p valkey-server top -F 99 -g
+
+  # Custom output filename
+  $SCRIPT_NAME -h server1 -p valkey-server -o baseline-profile.svg flame
+
+=== WORKFLOW PATTERNS ===
+
+  # Pattern 1: Quick diagnosis
+  $SCRIPT_NAME -h server1 -p valkey-server stat sleep 5          # Quick stats
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 10
+  $SCRIPT_NAME -h server1 -p valkey-server flame                 # Visual overview
+
+  # Pattern 2: Deep thread analysis
+  $SCRIPT_NAME -h server1 -p valkey-server thread-stats          # Identify hot threads
+  $SCRIPT_NAME -h server1 -p valkey-server -t io_thd_1 record -F 99 -g sleep 30
+  $SCRIPT_NAME -h server1 -p valkey-server -t io_thd_1 flame     # Focus on one thread
+
+  # Pattern 3: Before/after optimization
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 30    # Before
+  # ... make changes ...
+  $SCRIPT_NAME -h server1 clean
+  $SCRIPT_NAME -h server1 -p valkey-server record -F 99 -g sleep 30    # After
+  $SCRIPT_NAME -h server1 -p valkey-server flame                       # Compare visually
+
+=== CLEANUP ===
+
+  # Remove remote perf data files
+  $SCRIPT_NAME -h server1 clean
+
+EOF
+    exit 1
+}
+
+check_flamegraph() {
+    if [[ ! -d "$FLAMEGRAPH_DIR" ]]; then
+        echo "Error: FlameGraph tools not found at $FLAMEGRAPH_DIR" >&2
+        echo "Clone from: git clone https://github.com/brendangregg/FlameGraph" >&2
+        echo "Or set FLAMEGRAPH_DIR environment variable" >&2
+        exit 1
+    fi
+    
+    if [[ ! -x "$FLAMEGRAPH_DIR/flamegraph.pl" ]] || [[ ! -x "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" ]]; then
+        echo "Error: FlameGraph scripts not executable" >&2
+        exit 1
+    fi
+}
+
+HOST=""
+USER=""
+OUTPUT=""
+SKIP_SUDO=false
+PROCESS_FILTER=""
+THREAD_FILTER=""
+TID_FILTER=""
+
+while getopts "h:u:o:sp:t:-:" opt; do
+    case $opt in
+        h) HOST="$OPTARG" ;;
+        u) USER="$OPTARG" ;;
+        o) OUTPUT="$OPTARG" ;;
+        s) SKIP_SUDO=true ;;
+        p) PROCESS_FILTER="$OPTARG" ;;
+        t) THREAD_FILTER="$OPTARG" ;;
+        -)
+            case "$OPTARG" in
+                tid) TID_FILTER="${!OPTIND}"; OPTIND=$((OPTIND + 1)) ;;
+                *) echo "Unknown option --$OPTARG" >&2; usage ;;
+            esac
+            ;;
+        *) usage ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+if [[ -z "$HOST" ]] || [[ $# -eq 0 ]]; then
+    usage
+fi
+
+COMMAND=$1
+shift
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30"
+if [[ -n "$USER" ]]; then
+    SSH_TARGET="$USER@$HOST"
+else
+    SSH_TARGET="$HOST"
+fi
+
+SUDO_CMD="sudo"
+if [[ "$SKIP_SUDO" == true ]]; then
+    SUDO_CMD=""
+fi
+
+# Build perf record filter arguments
+build_record_filter() {
+    FILTER_ARGS=""
+    
+    if [[ -n "$PROCESS_FILTER" ]]; then
+        PIDS=$(ssh $SSH_OPTS "$SSH_TARGET" "pgrep -x '$PROCESS_FILTER' || pgrep '$PROCESS_FILTER'" | tr '\n' ',' | sed 's/,$//')
+        if [[ -z "$PIDS" ]]; then
+            echo "Error: No processes found matching '$PROCESS_FILTER'" >&2
+            echo "Available processes:" >&2
+            ssh $SSH_OPTS "$SSH_TARGET" "ps -eo comm | sort -u | head -20" >&2
+            exit 1
+        fi
+        FILTER_ARGS="-p $PIDS"
+        debug "Process filter: $PROCESS_FILTER (PIDs: $PIDS)"
+    fi
+    
+    if [[ -n "$TID_FILTER" ]]; then
+        FILTER_ARGS="-t $TID_FILTER"
+        debug "TID filter: $TID_FILTER"
+    elif [[ -n "$THREAD_FILTER" ]]; then
+        safe_pat=$(printf '%s\n' "$THREAD_FILTER" | sed -e 's/[.[\^$()+?{}|]/\\&/g' -e 's/\*/.*/g')
+        TID_LIST=$(ssh $SSH_OPTS "$SSH_TARGET" "ps -eLo tid,comm | awk '\$2 ~ /^${safe_pat}\$/ {printf \"%s,\", \$1}' | sed 's/,\$//'")
+        if [[ -z "$TID_LIST" ]]; then
+            echo "Error: No threads found matching '$THREAD_FILTER'" >&2
+            echo "Available threads matching process:" >&2
+            if [[ -n "$PROCESS_FILTER" ]]; then
+                ssh $SSH_OPTS "$SSH_TARGET" "pgrep '$PROCESS_FILTER' | xargs -I {} ps -eLo tid,comm -p {} 2>/dev/null | head -20" >&2
+            fi
+            exit 1
+        fi
+        FILTER_ARGS="-t $TID_LIST"
+        debug "Thread filter: $THREAD_FILTER (TIDs: $TID_LIST)"
+    fi
+    
+    echo "$FILTER_ARGS"
+}
+
+# Generate output filename with timestamp
+generate_output_name() {
+    local cmd_type="$1"
+    local suffix=""
+    
+    if [[ -n "$PROCESS_FILTER" ]]; then
+        suffix="${suffix}-${PROCESS_FILTER}"
+    fi
+    if [[ -n "$THREAD_FILTER" ]]; then
+        suffix="${suffix}-${THREAD_FILTER//\*/all}"
+    fi
+    if [[ -n "$TID_FILTER" ]]; then
+        suffix="${suffix}-tid${TID_FILTER}"
+    fi
+    
+    echo "${HOST}${suffix}-$(date +%Y%m%d-%H%M%S).${cmd_type}"
+}
+
+case $COMMAND in
+    stat)
+        debug "Running perf stat on $HOST"
+        FILTER_ARGS=$(build_record_filter)
+        debug "Filter args: $FILTER_ARGS"
+        ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf stat $FILTER_ARGS "$@"
+        ;;
+    
+    record)
+        echo "Recording on $HOST..." >&2
+        FILTER_ARGS=$(build_record_filter)
+        debug "Filter args: $FILTER_ARGS"
+        ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf record $FILTER_ARGS "$@"
+        echo "Record complete. Use 'report', 'thread-stats', or 'flame' to analyze." >&2
+        ;;
+    
+    report)
+        if [[ -t 1 ]]; then
+            ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf report -i perf.data --stdio "$@" | less -R
+        else
+            ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf report -i perf.data --stdio "$@"
+        fi
+        ;;
+    
+    report-save)
+        if [[ $# -eq 0 ]]; then
+            REPORT_FILE="${HOST}-$(date +%Y%m%d-%H%M%S)-report.txt"
+        else
+            REPORT_FILE="$1"
+            shift
+        fi
+        
+        echo "Saving perf report to $REPORT_FILE..." >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf report -i perf.data --stdio "$@" > "$REPORT_FILE"
+        echo "Report saved to $REPORT_FILE ($(wc -l < "$REPORT_FILE") lines)" >&2
+        ;;
+    
+    script)
+        if [[ -t 1 ]]; then
+            ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf script -i perf.data "$@" | less
+        else
+            ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf script -i perf.data "$@"
+        fi
+        ;;
+    
+    script-save)
+        if [[ $# -eq 0 ]]; then
+            SCRIPT_FILE="${HOST}-$(date +%Y%m%d-%H%M%S)-script.txt"
+        else
+            SCRIPT_FILE="$1"
+            shift
+        fi
+        
+        echo "Saving perf script to $SCRIPT_FILE..." >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf script -i perf.data "$@" > "$SCRIPT_FILE"
+        echo "Script saved to $SCRIPT_FILE ($(wc -l < "$SCRIPT_FILE") lines)" >&2
+        ;;
+    
+    top)
+        ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf top "$@"
+        ;;
+    
+    thread-stats)
+        echo "Gathering per-thread statistics from $HOST..." >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD bash" <<'EOF'
+            if [[ ! -f perf.data ]]; then
+                echo "Error: No perf.data found. Run record first." >&2
+                exit 1
+            fi
+            
+            echo "=== Per-Thread CPU Statistics ==="
+            echo
+            
+            events=$(perf report -i perf.data --stdio --header-only 2>/dev/null | grep "# Samples:" | awk -F"of event " '{print $2}' | cut -d"'" -f2 | sort -u)
+            
+            for event in $events; do
+                echo "Event: $event"
+                echo "----------------------------------------"
+                perf report -i perf.data --stdio -s comm,tid --percent-limit 0.01 -F overhead,comm,tid -G -n --event="$event" 2>/dev/null | \
+                    grep -E "^[[:space:]]*[0-9]" | head -30
+                echo
+            done
+            
+            echo "=== Sample Counts by Thread ==="
+            echo "Samples  TID      Thread Name"
+            echo "-------  -------  -----------"
+            perf script -i perf.data -F tid,comm 2>/dev/null | \
+                awk '{count[$1" "$2]++} END {for (key in count) print count[key], key}' | \
+                sort -rn | head -30
+EOF
+        ;;
+    
+    thread-time)
+        echo "Calculating per-thread on-CPU time from $HOST..." >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD bash" <<'EOF'
+            if [[ ! -f perf.data ]]; then
+                echo "Error: No perf.data found. Run record first." >&2
+                exit 1
+            fi
+            
+            echo "=== Per-Thread On-CPU Time (from samples) ==="
+            echo
+            
+            total=$(perf script -i perf.data -F tid 2>/dev/null | wc -l)
+            
+            echo "Total samples: $total"
+            echo
+            echo "Thread Name        TID      Samples    % of Total Samples"
+            echo "----------------  -------  ---------  ------------------"
+            
+            perf script -i perf.data -F comm,tid 2>/dev/null | \
+                awk -v total="$total" '{count[$1" "$2]++} 
+                     END {
+                         for (key in count) {
+                             pct = (count[key] / total) * 100
+                             split(key, parts, " ")
+                             comm = parts[1]
+                             tid = parts[2]
+                             printf "%-16s  %7s  %9d  %17.2f%%\n", comm, tid, count[key], pct
+                         }
+                     }' | \
+                sort -k4 -rn | head -30
+            
+            echo
+            echo "Note: This shows relative sample distribution, not absolute CPU time."
+            echo "A thread with fewer samples may still be 100% busy if sampled less."
+            echo "For true CPU %, use: perf stat -t <tid> -e cpu-clock"
+EOF
+        ;;
+    
+    thread-cpu)
+        echo "Measuring per-thread CPU utilization on $HOST..." >&2
+        
+        if [[ -z "$PROCESS_FILTER" ]]; then
+            echo "Error: thread-cpu requires -p (process filter)" >&2
+            exit 1
+        fi
+        
+        DURATION="${1:-5}"
+        
+        echo "Monitoring process: $PROCESS_FILTER for $DURATION seconds" >&2
+        echo >&2
+        
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD bash -s" "$PROCESS_FILTER" "$DURATION" <<'EOF'
+            process_name="$1"
+            duration="$2"
+            
+            pids=$(pgrep -x "$process_name" || pgrep "$process_name")
+            
+            if [[ -z "$pids" ]]; then
+                echo "Error: No process found matching '$process_name'" >&2
+                exit 1
+            fi
+            
+            hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+            
+            echo "Thread Name        TID      CPU Time (s)    CPU %"
+            echo "----------------  -------  --------------  --------"
+            
+            declare -A start_times
+            declare -A thread_names
+            
+            for pid in $pids; do
+                for tid_stat in /proc/$pid/task/*/stat; do
+                    [[ -f "$tid_stat" ]] || continue
+                    
+                    tid=$(basename "$(dirname "$tid_stat")")
+                    line=$(<"$tid_stat")
+                    
+                    # Extract comm (between first '(' and last ')')
+                    comm="${line#*(}"
+                    comm="${comm%)*}"
+                    thread_names[$tid]="$comm"
+                    
+                    # Remove "pid (comm) " to get fields 3+
+                    rest="${line#*) }"
+                    
+                    # Fields 14,15 in original -> 12,13 in rest (utime, stime)
+                    utime=$(awk '{print $12}' <<< "$rest")
+                    stime=$(awk '{print $13}' <<< "$rest")
+                    start_times[$tid]=$((utime + stime))
+                done
+            done
+            
+            sleep "$duration"
+            
+            for pid in $pids; do
+                for tid_stat in /proc/$pid/task/*/stat; do
+                    [[ -f "$tid_stat" ]] || continue
+                    
+                    tid=$(basename "$(dirname "$tid_stat")")
+                    
+                    if [[ -n "${start_times[$tid]}" ]]; then
+                        line=$(<"$tid_stat")
+                        
+                        # Extract comm for display
+                        comm="${line#*(}"
+                        comm="${comm%)*}"
+                        
+                        rest="${line#*) }"
+                        utime=$(awk '{print $12}' <<< "$rest")
+                        stime=$(awk '{print $13}' <<< "$rest")
+                        end_time=$((utime + stime))
+                        
+                        delta=$((end_time - start_times[$tid]))
+                        
+                        cpu_sec=$(awk -v d="$delta" -v hz="$hz" 'BEGIN{printf "%.2f", d/hz}')
+                        cpu_pct=$(awk -v cs="$cpu_sec" -v dur="$duration" 'BEGIN{printf "%.2f", (cs/dur)*100}')
+                        
+                        # Skip threads with 0% CPU
+                        if (( $(awk -v pct="$cpu_pct" 'BEGIN{print (pct > 0.0)}') )); then
+                            printf "%-16s  %7s  %14s  %7s%%\n" "$comm" "$tid" "$cpu_sec" "$cpu_pct"
+                        fi
+                    fi
+                done
+            done | sort -t ' ' -k4 -rn
+EOF
+        ;;
+    
+    flame)
+        check_flamegraph
+        
+        if [[ -z "$OUTPUT" ]]; then
+            OUTPUT=$(generate_output_name svg)
+        fi
+        
+        echo "Generating flamegraph from $HOST..." >&2
+        debug "SSH_TARGET=$SSH_TARGET"
+        debug "SUDO_CMD=$SUDO_CMD"
+        debug "Output file: $OUTPUT"
+        
+        FLAME_TITLE="$HOST"
+        [[ -n "$PROCESS_FILTER" ]] && FLAME_TITLE="$FLAME_TITLE - $PROCESS_FILTER"
+        [[ -n "$THREAD_FILTER" ]] && FLAME_TITLE="$FLAME_TITLE - $THREAD_FILTER"
+        
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD bash -c '
+            if [[ ! -f perf.data ]]; then
+                echo \"Error: No perf.data found. Run record first.\" >&2
+                exit 1
+            fi
+            perf script -i perf.data
+        '" | \
+        "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" | \
+        "$FLAMEGRAPH_DIR/flamegraph.pl" --title "$FLAME_TITLE" > "$OUTPUT"
+        
+        echo "Flamegraph saved to $OUTPUT" >&2
+        ;;
+    
+    flame-diff)
+        check_flamegraph
+        if [[ $# -ne 2 ]]; then
+            echo "Error: flame-diff requires two perf.data paths" >&2
+            echo "Usage: $SCRIPT_NAME -h <host> flame-diff <new-perf.data> <old-perf.data>" >&2
+            exit 1
+        fi
+        
+        NEW_DATA=$1
+        OLD_DATA=$2
+        echo "Generating differential flamegraph..." >&2
+        
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD perf script -i $NEW_DATA" | \
+        "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" > /tmp/new.folded
+        
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD perf script -i $OLD_DATA" | \
+        "$FLAMEGRAPH_DIR/stackcollapse-perf.pl" > /tmp/old.folded
+        
+        DIFF_OUTPUT="${OUTPUT:-diff-flame.svg}"
+        "$FLAMEGRAPH_DIR/difffolded.pl" /tmp/old.folded /tmp/new.folded | \
+        "$FLAMEGRAPH_DIR/flamegraph.pl" --title "Differential Flame Graph" > "$DIFF_OUTPUT"
+        
+        rm -f /tmp/new.folded /tmp/old.folded
+        echo "Differential flamegraph saved to $DIFF_OUTPUT" >&2
+        ;;
+    
+    annotate)
+        if [[ $# -eq 0 ]]; then
+            echo "Error: annotate requires a symbol name" >&2
+            exit 1
+        fi
+        SYMBOL=$1
+        shift
+        ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf annotate -i perf.data --stdio "$SYMBOL" "$@" | less -R
+        ;;
+    
+    interactive)
+        echo "Opening interactive perf report (may be laggy over SSH)..." >&2
+        ssh -XY -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD" perf report -i perf.data "$@"
+        ;;
+    
+    fetch)
+        REMOTE_FILE=${1:-perf.data}
+        LOCAL_FILE=$(basename "$REMOTE_FILE")
+        echo "Fetching $REMOTE_FILE from $HOST..." >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD cat $REMOTE_FILE" > "$LOCAL_FILE"
+        echo "Saved to $LOCAL_FILE ($(du -h "$LOCAL_FILE" | cut -f1))" >&2
+        ;;
+    
+    clean)
+        echo "Cleaning perf data on $HOST..." >&2
+        ssh -t $SSH_OPTS "$SSH_TARGET" "$SUDO_CMD rm -f perf.data perf.data.old"
+        echo "Cleaned." >&2
+        ;;
+    
+    *)
+        echo "Unknown command: $COMMAND" >&2
+        usage
+        ;;
+esac

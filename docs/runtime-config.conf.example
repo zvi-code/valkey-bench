@@ -1,0 +1,55 @@
+# Runtime Configuration Example
+# 
+# This file demonstrates how to configure server-side settings that will be
+# applied before benchmarks run. Configurations are applied to all cluster nodes.
+#
+# Format: key value (or key=value)
+# Comments start with #
+# Empty lines are ignored
+
+# IO Threads Configuration
+# Controls the number of I/O threads for network operations
+io-threads 4
+io-threads-do-reads yes
+
+# Worker Threads Configuration  
+# Note: This is an engine-specific setting (may vary by Valkey/Redis version)
+# search-threads 4
+
+# Memory Configuration
+# maxmemory 10gb
+# maxmemory-policy allkeys-lru
+
+# Network Configuration
+# tcp-backlog 2048
+# tcp-keepalive 300
+
+# Timeout Configuration
+# timeout 0
+
+# Logging Configuration
+# loglevel notice
+
+# Persistence Configuration (disable for benchmarks)
+# save ""
+# appendonly no
+
+# Slow Log Configuration
+# slowlog-log-slower-than 10000
+# slowlog-max-len 128
+
+# Client Configuration
+# maxclients 10000
+
+# Example: Performance Tuning for Vector Search
+# These settings optimize for vector search workloads:
+# - More I/O threads for handling concurrent connections
+# - Disable persistence to avoid I/O overhead
+# - Increase client limits
+
+# Uncomment to use:
+# io-threads 8
+# io-threads-do-reads yes
+# save ""
+# appendonly no
+# maxclients 50000
