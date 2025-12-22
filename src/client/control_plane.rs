@@ -75,9 +75,16 @@ pub trait ControlPlaneExt: ControlPlane {
         self.cluster_nodes().is_ok()
     }
     
-    /// Get INFO for a section
+    /// Get INFO for a section (empty string or "all" returns all sections)
     fn info(&mut self, section: &str) -> io::Result<String> {
-        match self.execute(&["INFO", section])? {
+        // Build command - use just INFO for empty section, otherwise INFO <section>
+        let response = if section.is_empty() {
+            self.execute(&["INFO"])?
+        } else {
+            self.execute(&["INFO", section])?
+        };
+        
+        match response {
             RespValue::BulkString(data) => {
                 String::from_utf8(data).map_err(|e| {
                     io::Error::new(io::ErrorKind::InvalidData, format!("Invalid UTF-8: {}", e))

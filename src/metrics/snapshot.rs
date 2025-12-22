@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use super::info_fields::{
     calculate_diff, format_value, parse_value, AggregationType, DiffType, DisplayFormat,
-    FieldSnapshot, FieldValue, InfoFieldType, NodeFilter,
+    FieldSnapshot, FieldValue, InfoFieldType, MatchStrategy, NodeFilter,
 };
 
 /// Snapshot of a single field value from one node
@@ -86,7 +86,7 @@ impl SnapshotBuilder {
     pub fn add_node(&mut self, node_id: &str, is_primary: bool, info_lines: &str) {
         self.node_ids.push(node_id.to_string());
 
-        let mut values = HashMap::new();
+        let mut values: HashMap<String, NodeFieldValue> = HashMap::new();
 
         for line in info_lines.lines() {
             let line = line.trim();
@@ -96,7 +96,8 @@ impl SnapshotBuilder {
 
             // Find matching field definitions
             for field in &self.fields {
-                if !field.matches(line.split(':').next().unwrap_or("")) {
+                let field_name_in_line = line.split(':').next().unwrap_or("");
+                if !field.matches(field_name_in_line) {
                     continue;
                 }
 
@@ -113,9 +114,17 @@ impl SnapshotBuilder {
 
                 // Parse value
                 if let Some(value) = parse_value(line, &field.parse_config) {
+                    // For prefix-matched fields, use the actual field name from the line
+                    // (e.g., "cmdstat_get" instead of "cmdstat_") to track each command separately
+                    let base_name = if field.match_strategy == MatchStrategy::Prefix {
+                        field_name_in_line
+                    } else {
+                        &field.name
+                    };
+                    
                     let field_key = format!(
                         "{}{}",
-                        field.name,
+                        base_name,
                         field
                             .parse_config
                             .key
@@ -146,62 +155,91 @@ impl SnapshotBuilder {
 
         // Aggregate each field
         for field in &self.fields {
-            let field_key = format!(
-                "{}{}",
-                field.name,
-                field
+            // For prefix-matched fields, find all unique keys that match the pattern
+            let field_keys: Vec<String> = if field.match_strategy == MatchStrategy::Prefix {
+                // Collect all unique keys that start with the pattern and have the right suffix
+                let suffix = field
                     .parse_config
                     .key
                     .as_ref()
                     .map(|k| format!(":{}", k))
-                    .unwrap_or_default()
-            );
-
-            let mut values: Vec<i64> = Vec::new();
-            let mut per_node: Vec<(String, i64)> = Vec::new();
-            let mut node_count = 0;
-
-            for (idx, node_values) in self.node_values.iter().enumerate() {
-                if let Some(nv) = node_values.get(&field_key) {
-                    values.push(nv.value);
-                    per_node.push((self.node_ids[idx].clone(), nv.value));
-                    node_count += 1;
-                }
-            }
-
-            if values.is_empty() {
-                continue;
-            }
-
-            // Aggregate based on type
-            let aggregated = match field.aggregation_type {
-                AggregationType::Sum => FieldValue::new(values.iter().sum()),
-                AggregationType::Average => {
-                    let sum: i64 = values.iter().sum();
-                    FieldValue::new(sum / values.len() as i64)
-                }
-                AggregationType::Max => FieldValue::new(*values.iter().max().unwrap_or(&0)),
-                AggregationType::MinMax => {
-                    let min = *values.iter().min().unwrap_or(&0);
-                    let max = *values.iter().max().unwrap_or(&0);
-                    FieldValue::with_minmax(min, max)
-                }
+                    .unwrap_or_default();
+                
+                let mut keys: Vec<String> = self.node_values
+                    .iter()
+                    .flat_map(|nv| nv.keys())
+                    .filter(|k| {
+                        let name_lower = field.name.to_ascii_lowercase();
+                        let k_lower = k.to_ascii_lowercase();
+                        k_lower.starts_with(&name_lower) && k.ends_with(&suffix)
+                    })
+                    .cloned()
+                    .collect();
+                keys.sort();
+                keys.dedup();
+                keys
+            } else {
+                // Exact match - single key
+                vec![format!(
+                    "{}{}",
+                    field.name,
+                    field
+                        .parse_config
+                        .key
+                        .as_ref()
+                        .map(|k| format!(":{}", k))
+                        .unwrap_or_default()
+                )]
             };
 
-            snapshot.fields.insert(
-                field_key.clone(),
-                FieldSnapshot {
-                    field_name: field_key,
-                    value: aggregated,
-                    per_node_values: if field.track_per_node {
-                        Some(per_node)
-                    } else {
-                        None
+            // Process each field key
+            for field_key in field_keys {
+                let mut values: Vec<i64> = Vec::new();
+                let mut per_node: Vec<(String, i64)> = Vec::new();
+                let mut node_count = 0;
+
+                for (idx, node_values) in self.node_values.iter().enumerate() {
+                    if let Some(nv) = node_values.get(&field_key) {
+                        values.push(nv.value);
+                        per_node.push((self.node_ids[idx].clone(), nv.value));
+                        node_count += 1;
+                    }
+                }
+
+                if values.is_empty() {
+                    continue;
+                }
+
+                // Aggregate based on type
+                let aggregated = match field.aggregation_type {
+                    AggregationType::Sum => FieldValue::new(values.iter().sum()),
+                    AggregationType::Average => {
+                        let sum: i64 = values.iter().sum();
+                        FieldValue::new(sum / values.len() as i64)
+                    }
+                    AggregationType::Max => FieldValue::new(*values.iter().max().unwrap_or(&0)),
+                    AggregationType::MinMax => {
+                        let min = *values.iter().min().unwrap_or(&0);
+                        let max = *values.iter().max().unwrap_or(&0);
+                        FieldValue::with_minmax(min, max)
+                    }
+                };
+
+                snapshot.fields.insert(
+                    field_key.clone(),
+                    FieldSnapshot {
+                        field_name: field_key,
+                        value: aggregated,
+                        per_node_values: if field.track_per_node {
+                            Some(per_node)
+                        } else {
+                            None
+                        },
+                        node_count,
+                        valid: true,
                     },
-                    node_count,
-                    valid: true,
-                },
-            );
+                );
+            }
         }
 
         snapshot
@@ -287,68 +325,94 @@ pub fn compare_snapshots(
     let mut field_diffs = Vec::new();
 
     for field in fields {
-        let field_key = format!(
-            "{}{}",
-            field.name,
-            field
+        // For prefix-matched fields, find all keys that match in both snapshots
+        let field_keys: Vec<String> = if field.match_strategy == MatchStrategy::Prefix {
+            let suffix = field
                 .parse_config
                 .key
                 .as_ref()
                 .map(|k| format!(":{}", k))
-                .unwrap_or_default()
-        );
+                .unwrap_or_default();
+            
+            // Collect keys from both old and new snapshots
+            let mut keys: Vec<String> = old.fields.keys()
+                .chain(new.fields.keys())
+                .filter(|k| {
+                    let name_lower = field.name.to_ascii_lowercase();
+                    let k_lower = k.to_ascii_lowercase();
+                    k_lower.starts_with(&name_lower) && k.ends_with(&suffix)
+                })
+                .cloned()
+                .collect();
+            keys.sort();
+            keys.dedup();
+            keys
+        } else {
+            vec![format!(
+                "{}{}",
+                field.name,
+                field
+                    .parse_config
+                    .key
+                    .as_ref()
+                    .map(|k| format!(":{}", k))
+                    .unwrap_or_default()
+            )]
+        };
 
-        let old_field = old.fields.get(&field_key);
-        let new_field = new.fields.get(&field_key);
+        for field_key in field_keys {
+            let old_field = old.fields.get(&field_key);
+            let new_field = new.fields.get(&field_key);
 
-        if let (Some(old_f), Some(new_f)) = (old_field, new_field) {
-            if !old_f.valid || !new_f.valid {
-                continue;
-            }
-
-            let old_value = old_f.value.value;
-            let new_value = new_f.value.value;
-            let delta = new_value - old_value;
-
-            let rate = if field.diff_type != DiffType::None {
-                calculate_diff(old_value, new_value, elapsed_secs, field.diff_type)
-            } else {
-                None
-            };
-
-            // Compute per-node deltas if both snapshots have per-node values
-            let per_node_deltas = if field.track_per_node {
-                match (&old_f.per_node_values, &new_f.per_node_values) {
-                    (Some(old_nodes), Some(new_nodes)) => {
-                        let mut deltas = Vec::new();
-                        // Build map of old values
-                        let old_map: std::collections::HashMap<&str, i64> = old_nodes
-                            .iter()
-                            .map(|(k, v)| (k.as_str(), *v))
-                            .collect();
-
-                        for (node_id, new_val) in new_nodes {
-                            let old_val = *old_map.get(node_id.as_str()).unwrap_or(&0);
-                            deltas.push((node_id.clone(), old_val, *new_val, *new_val - old_val));
-                        }
-                        Some(deltas)
-                    }
-                    _ => None,
+            if let (Some(old_f), Some(new_f)) = (old_field, new_field) {
+                if !old_f.valid || !new_f.valid {
+                    continue;
                 }
-            } else {
-                None
-            };
 
-            field_diffs.push(FieldDiff {
-                field_name: field_key,
-                old_value,
-                new_value,
-                delta,
-                rate,
-                display_format: field.display_format,
-                diff_type: field.diff_type,
-                per_node_deltas,
-            });
+                let old_value = old_f.value.value;
+                let new_value = new_f.value.value;
+                let delta = new_value - old_value;
+
+                let rate = if field.diff_type != DiffType::None {
+                    calculate_diff(old_value, new_value, elapsed_secs, field.diff_type)
+                } else {
+                    None
+                };
+
+                // Compute per-node deltas if both snapshots have per-node values
+                let per_node_deltas = if field.track_per_node {
+                    match (&old_f.per_node_values, &new_f.per_node_values) {
+                        (Some(old_nodes), Some(new_nodes)) => {
+                            let mut deltas = Vec::new();
+                            // Build map of old values
+                            let old_map: std::collections::HashMap<&str, i64> = old_nodes
+                                .iter()
+                                .map(|(k, v)| (k.as_str(), *v))
+                                .collect();
+
+                            for (node_id, new_val) in new_nodes {
+                                let old_val = *old_map.get(node_id.as_str()).unwrap_or(&0);
+                                deltas.push((node_id.clone(), old_val, *new_val, *new_val - old_val));
+                            }
+                            Some(deltas)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                field_diffs.push(FieldDiff {
+                    field_name: field_key,
+                    old_value,
+                    new_value,
+                    delta,
+                    rate,
+                    display_format: field.display_format,
+                    diff_type: field.diff_type,
+                    per_node_deltas,
+                });
+            }
         }
     }
 

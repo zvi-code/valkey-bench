@@ -215,11 +215,13 @@ impl InfoFieldType {
         self
     }
 
-    /// Check if this field matches a given field name
+    /// Check if this field matches a given field name (case-insensitive)
     pub fn matches(&self, field_name: &str) -> bool {
+        let field_lower = field_name.to_ascii_lowercase();
+        let name_lower = self.name.to_ascii_lowercase();
         match self.match_strategy {
-            MatchStrategy::Exact => field_name == self.name,
-            MatchStrategy::Prefix => field_name.starts_with(&self.name),
+            MatchStrategy::Exact => field_lower == name_lower,
+            MatchStrategy::Prefix => field_lower.starts_with(&name_lower),
         }
     }
 }
@@ -853,6 +855,20 @@ pub fn default_info_fields() -> Vec<InfoFieldType> {
             .aggregate(AggregationType::Sum)
             .display(DisplayFormat::Integer)
             .diff(DiffType::RateCount),
+
+        InfoFieldType::new("cmdstat_")
+            .prefix_match()
+            .parse(ParseConfig::cmdstats("calls"))
+            .aggregate(AggregationType::Sum)
+            .display(DisplayFormat::Integer)
+            .diff(DiffType::RateCount),
+        InfoFieldType::new("cmdstat_")
+            .prefix_match()
+            .parse(ParseConfig::cmdstats("usec"))
+            .aggregate(AggregationType::Sum)
+            .display(DisplayFormat::Integer)
+            .diff(DiffType::RateMicrosec),
+
     ]
 }
 

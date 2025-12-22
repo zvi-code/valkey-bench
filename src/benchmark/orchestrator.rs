@@ -20,7 +20,7 @@ use crate::cluster::{
 };
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
-use crate::metrics::info_fields::{default_info_fields, default_search_info_fields};
+use crate::metrics::info_fields::{default_info_fields, default_search_info_fields, InfoFieldType};
 use crate::metrics::reporter::{BenchmarkResults, OutputFormat};
 use crate::metrics::snapshot::{compare_snapshots, print_per_node_matrix, ClusterSnapshot, SnapshotBuilder};
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
@@ -497,13 +497,19 @@ impl Orchestrator {
         })
     }
 
-    /// Capture a cluster snapshot of INFO stats from all nodes
+    /// Capture a cluster snapshot from all nodes using specified fields
     ///
-    /// Uses the snapshot infrastructure to collect and aggregate metrics
-    /// across all cluster nodes (or standalone node).
-    fn capture_info_snapshot(&self, label: &str) -> ClusterSnapshot {
+    /// This is a generic helper that collects full INFO output from all cluster nodes
+    /// (or standalone node) and builds a snapshot using the provided field definitions.
+    /// The field definitions support both exact and prefix-based matching via
+    /// `InfoFieldType::matches()`, so only relevant fields are extracted regardless
+    /// of which INFO section they come from.
+    ///
+    /// # Arguments
+    /// * `label` - Label for the snapshot (e.g., "before", "after")
+    /// * `fields` - Field definitions that determine what to extract and how to aggregate
+    fn capture_snapshot(&self, label: &str, fields: Vec<InfoFieldType>) -> ClusterSnapshot {
         let addresses = self.get_benchmark_addresses();
-        let fields = default_info_fields();
         let mut builder = SnapshotBuilder::new(label, fields);
 
         for (host, port) in addresses {
@@ -517,8 +523,8 @@ impl Orchestrator {
 
             match self.connection_factory.create(&host, port) {
                 Ok(mut conn) => {
-                    // Get INFO stats section (contains keyspace_hits/misses)
-                    match conn.info("stats") {
+                    // Fetch full INFO output including commandstats - SnapshotBuilder filters to relevant fields
+                    match conn.info("all") {
                         Ok(info_str) => {
                             builder.add_node(&node_id, is_primary, &info_str);
                         }
@@ -536,44 +542,20 @@ impl Orchestrator {
         builder.build()
     }
 
+    /// Capture a cluster snapshot of INFO stats from all nodes
+    ///
+    /// Uses the snapshot infrastructure to collect and aggregate metrics
+    /// across all cluster nodes (or standalone node).
+    fn capture_info_snapshot(&self, label: &str) -> ClusterSnapshot {
+        self.capture_snapshot(label, default_info_fields())
+    }
+
     /// Capture a cluster snapshot of INFO SEARCH stats from all nodes
     ///
     /// Uses the snapshot infrastructure to collect and aggregate search metrics
     /// across all cluster nodes (or standalone node).
     fn capture_search_snapshot(&self, label: &str) -> ClusterSnapshot {
-        let addresses = self.get_benchmark_addresses();
-        let fields = default_search_info_fields();
-        let mut builder = SnapshotBuilder::new(label, fields);
-
-        for (host, port) in addresses {
-            let node_id = format!("{}:{}", host, port);
-            // Determine if this is a primary node
-            let is_primary = if let Some(ref topology) = self.cluster_topology {
-                topology.primaries().any(|p| p.host == host && p.port == port)
-            } else {
-                true // Standalone mode - treat as primary
-            };
-
-            match self.connection_factory.create(&host, port) {
-                Ok(mut conn) => {
-                    // Get INFO SEARCH section
-                    match conn.info("search") {
-                        Ok(info_str) => {
-                            builder.add_node(&node_id, is_primary, &info_str);
-                        }
-                        Err(_) => {
-                            // Silently ignore errors - stats capture is best-effort
-                            // This is expected for non-search workloads or servers without search
-                        }
-                    }
-                }
-                Err(_) => {
-                    // Silently ignore connection errors
-                }
-            }
-        }
-
-        builder.build()
+        self.capture_snapshot(label, default_search_info_fields())
     }
 
     /// Extract keyspace stats from a snapshot
