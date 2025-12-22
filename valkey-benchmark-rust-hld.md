@@ -21,12 +21,20 @@
 
 ### 1.2 Supported Features
 
-- **Multiple Workloads**: PING, GET, SET, HSET, LPUSH, RPUSH, SADD, ZADD, vector operations
-- **Cluster Mode**: Automatic topology discovery, read-from-replica strategies
+- **Multiple Workloads**: PING, GET, SET, INCR, HSET, LPUSH, RPUSH, LPOP, RPOP, LRANGE, SADD, SPOP, ZADD, ZPOPMIN, MSET, and vector operations
+- **Parallel Workloads**: Mixed traffic with weighted distribution (e.g., 80% GET, 20% SET)
+- **Composite Workloads**: Sequential phases for setup-then-test patterns
+- **Iteration Strategies**: Sequential, random, subset, and zipfian key access patterns
+- **Addressable Spaces**: Hash fields, JSON paths, and channels beyond simple keys
+- **Cluster Mode**: Automatic topology discovery, read-from-replica strategies, backend detection
 - **Vector Search**: FT.CREATE, FT.SEARCH with recall@k computation
+- **Filtered Search**: Tag and numeric field support with configurable distributions
 - **Rate Limiting**: Token bucket for controlled load testing
 - **TLS/SSL**: Full certificate authentication support
 - **CLI Mode**: Interactive command interface (valkey-cli compatible)
+- **Parameter Optimizer**: Multi-objective optimization with constraints and adaptive duration
+- **Base RTT Measurement**: Network baseline measurement for normalized results
+- **JSON/CSV Output**: Machine-readable results for CI/CD integration
 
 ---
 
@@ -327,9 +335,95 @@ Example - HSET for vector insert:
 | ping | PING | Basic connectivity |
 | get | GET key | Read operation |
 | set | SET key value | Write operation |
+| incr | INCR key | Increment counter |
 | hset | HSET key field value | Hash write |
+| lpush/rpush | LPUSH/RPUSH key value | List push |
+| lpop/rpop | LPOP/RPOP key | List pop |
+| lrange100-600 | LRANGE key 0 N | List range read |
+| sadd | SADD key member | Set add |
+| spop | SPOP key | Set pop |
+| zadd | ZADD key score member | Sorted set add |
+| zpopmin | ZPOPMIN key | Sorted set pop |
+| mset | MSET k1 v1 ... k10 v10 | Multi-key set |
 | vec-load | HSET with vector | Load vectors into index |
 | vec-query | FT.SEARCH | Vector similarity search |
+| vec-delete | DEL key | Delete vector keys |
+| vec-update | HSET with vector | Update existing vectors |
+
+### 6.4 Parallel Workloads
+
+Mixed traffic with weighted distribution for realistic scenarios:
+
+```
+--parallel "get:0.8,set:0.2"     # 80% GET, 20% SET
+--parallel "get:0.7,set:0.2,del:0.1"   # Multi-workload mix
+```
+
+Each request randomly selects a workload based on the weights, simulating production traffic patterns.
+
+### 6.5 Composite Workloads
+
+Sequential phases for setup-then-test patterns:
+
+```
+--composite "vec-load:10000,vec-query:50000"
+```
+
+Runs vec-load for 10,000 requests, then vec-query for 50,000 requests. Useful for benchmarking query performance on freshly loaded data.
+
+### 6.6 Iteration Strategies
+
+Key/vector selection patterns (`--iteration`):
+
+| Strategy | Format | Description |
+|----------|--------|-------------|
+| sequential | `sequential` | Keys 0, 1, 2, ... N-1 |
+| random | `random[:seed]` | Uniform random with optional seed |
+| subset | `subset:start:end` | Only keys in range [start, end) |
+| zipfian | `zipfian:skew[:seed]` | Power-law distribution (skew 0.5-2.0) |
+
+### 6.7 Addressable Spaces
+
+Beyond simple keys, the tool supports structured data (`--address-type`):
+
+| Type | Format | Description |
+|------|--------|-------------|
+| key | `key:prefix` | Simple key with prefix |
+| hash | `hash:prefix:field1,field2` | Hash with specified fields |
+| json | `json:prefix:$.path` | JSON document with JSON path |
+| channel | `channel:prefix` | Pub/Sub channel names |
+
+### 6.8 Numeric Field Configuration
+
+For vec-load, generate numeric fields with configurable distributions (`--numeric-field-config`):
+
+```
+Format: name:type:distribution:params
+
+Types: int, float[:decimals], unix_timestamp, iso_datetime, date_only
+
+Distributions:
+  uniform:min:max        Uniform random
+  zipfian:skew:min:max   Power-law (most values near min)
+  normal:mean:stddev     Gaussian
+  sequential:start:step  Incrementing
+  constant:value         Fixed value
+  key_based:min:max      Derived from key number
+
+Example: --numeric-field-config "price:float:uniform:0.99:999.99:2"
+```
+
+### 6.9 Tag Distribution
+
+For vec-load, generate tag fields with probabilistic selection (`--search-tags`):
+
+```
+--search-tags "electronics:30,clothing:25,home:20"
+
+Each tag has independent probability (0-100%) of being selected.
+A vector may have 0, 1, or multiple tags.
+Pattern __rand_int__ replaced with random integer.
+```
 
 ---
 
@@ -465,7 +559,7 @@ cargo build --release --features rustls-backend
 
 ### 12.2 Typical Performance
 
-On a 16-node cluster with 500-byte values:
+On a 16xlarge node cluster with 500-byte values:
 - GET: ~980K requests/second
 - SET: ~380K requests/second
 - FT.SEARCH: ~13K queries/second (depending on index size)
@@ -476,39 +570,77 @@ On a 16-node cluster with 500-byte values:
 
 ```
 src/
-  main.rs              Entry point, CLI dispatch
-  lib.rs               Library exports
+  main.rs                  Entry point, CLI dispatch, optimization loop
+  lib.rs                   Library exports
+  cli_mode.rs              Interactive CLI mode (valkey-cli compatible)
 
   config/
-    cli.rs             Clap argument definitions
-    benchmark_config.rs Runtime configuration
+    mod.rs                 Module exports
+    cli.rs                 Clap argument definitions
+    benchmark_config.rs    Runtime configuration, ServerAddress, AuthConfig
+    search_config.rs       Vector search configuration (SearchConfig, NumericBound)
+    tls_config.rs          TLS configuration (certificates, skip verify, SNI)
+    workload_config.rs     Per-workload configuration for parallel/composite
 
   client/
-    raw_connection.rs  TCP/TLS connection wrapper
-    benchmark_client.rs Per-client state and buffers
-    control_plane.rs   Cluster discovery trait
+    mod.rs                 Module exports
+    raw_connection.rs      TCP/TLS connection wrapper, ConnectionFactory
+    benchmark_client.rs    Per-client state and buffers, placeholder replacement
+    control_plane.rs       ControlPlane trait for cluster discovery
 
   cluster/
-    topology.rs        Node discovery and slot mapping
-    node.rs            ClusterNode representation
+    mod.rs                 Module exports
+    topology.rs            Node discovery (CLUSTER NODES), slot mapping
+    topology_manager.rs    Dynamic refresh on MOVED/ASK
+    node.rs                ClusterNode representation
+    backend.rs             Backend detection (ElastiCache, MemoryDB, OSS)
+    cluster_tag_map.rs     Vector ID to cluster tag mapping, cluster scanning
+    protected_ids.rs       Protected IDs for deletion benchmarks
 
   benchmark/
-    orchestrator.rs    Thread spawning, result collection
-    event_worker.rs    mio-based worker implementation
+    mod.rs                 Module exports
+    orchestrator.rs        Thread spawning, result collection, JSON/CSV export
+    event_worker.rs        mio-based worker implementation
+    counters.rs            GlobalCounters for atomic cross-thread synchronization
 
   workload/
-    types.rs           Workload type enum
-    template.rs        Command template builder
+    mod.rs                 Module exports
+    workload_type.rs       WorkloadType enum (Ping, Get, Set, VecLoad, VecQuery, etc.)
+    lifecycle.rs           Workload trait (preconfigure, prepare, run, postprocess)
+    context.rs             WorkloadContext trait and implementations
+    command_template.rs    RESP command template builder with placeholder support
+    template_factory.rs    Factory for creating templates for all workload types
+    key_format.rs          Key formatting with cluster tag support
+    addressable.rs         Addressable spaces (keys, hash fields, JSON paths, channels)
+    iteration.rs           Iteration strategies (Sequential, Random, Subset, Zipfian)
+    parallel.rs            ParallelWorkload for weighted concurrent execution
+    composite.rs           CompositeWorkload for sequential phases with ID passing
+    search_ops.rs          FT.CREATE, FT.SEARCH operations, index waiting
+    numeric_field.rs       Numeric field generation (distributions: uniform, zipfian, normal)
+    tag_distribution.rs    Tag distribution for filtered search (pattern + probability)
 
   dataset/
-    binary_dataset.rs  Memory-mapped dataset access
+    mod.rs                 Module exports
+    binary_dataset.rs      DatasetContext for zero-copy memory-mapped vector access
+    header.rs              DatasetHeader, magic constants, distance metrics
+    source.rs              DataSource and VectorDataSource traits
 
   metrics/
-    histogram.rs       HDR histogram wrapper
-    recall.rs          Recall statistics
-    reporter.rs        Output formatting
+    mod.rs                 Module exports
+    collector.rs           MetricsCollector for aggregating metrics across nodes
+    reporter.rs            Output formatting (text/JSON/CSV)
+    node_metrics.rs        Per-node metrics tracking (ops, latency, errors)
+    snapshot.rs            ClusterSnapshot for temporal comparison and diff
+    info_fields.rs         INFO field parsing strategies, aggregation types
+    ft_info.rs             FT.INFO parsing for ElastiCache and MemoryDB engines
+    backfill.rs            Index backfill progress monitoring and waiting
+
+  optimizer/
+    mod.rs                 Module exports
+    optimizer.rs           Multi-objective optimizer with constraints and adaptive duration
 
   utils/
-    resp.rs            RESP protocol codec
-    token_bucket.rs    Rate limiter
+    mod.rs                 Module exports
+    resp.rs                RESP protocol encoder/decoder
+    error.rs               Error types (BenchmarkError, ClusterError, ConnectionError)
 ```

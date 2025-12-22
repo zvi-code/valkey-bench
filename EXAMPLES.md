@@ -835,7 +835,7 @@ Multiple filters can be combined - all must match (AND logic).
   --iteration "sequential" \
   -c 200 --threads 16 -P 100
 
-# Maximum GET (target: ~1M req/s on 16-node cluster)
+# Maximum GET (target: ~1M req/s on 16xlarge node cluster)
 ./target/release/valkey-search-benchmark -h $HOST --cluster \
   -t get -n 3000000 -r 3000000 \
   -c 275 --threads 24 -P 100
@@ -878,5 +878,6 @@ Multiple filters can be combined - all must match (AND logic).
 ## See Also
 
 - [README.md](README.md) - Main documentation and API reference
-- [valkey-benchmark-rust-hld.md](valkey-benchmark-rust-hld.md) - High-level design
-- [valkey-search-benchmark-LLD.md](valkey-search-benchmark-LLD.md) - Low-level design details
+- [../CLAUDE.md](../CLAUDE.md) - Developer guide with current architecture
+- [../valkey-benchmark-rust-hld.md](../valkey-benchmark-rust-hld.md) - Original design proposal (historical)
+- [../valkey-search-benchmark-LLD.md](../valkey-search-benchmark-LLD.md) - C implementation design (legacy)

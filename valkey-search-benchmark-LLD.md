@@ -1,7 +1,21 @@
-# Low Level Design: valkey-search-benchmark
+# Low Level Design: valkey-search-benchmark (C Implementation Reference)
 
-**Version:** 2.0  
-**Purpose:** Comprehensive technical design document for refactoring and language migration
+> **Note: This document describes the LEGACY C IMPLEMENTATION**
+>
+> This LLD documents the original **C implementation** design patterns that informed the Rust rewrite.
+> The current Rust implementation in this directory follows similar architectural principles but uses:
+> - **mio** instead of ae event loop
+> - **Custom RESP codec** instead of libvalkey
+> - **std::thread** instead of pthreads
+> - **Rust ownership** instead of manual memory management
+>
+> For the current Rust architecture, see:
+> - [valkey-benchmark-rust-hld.md](valkey-benchmark-rust-hld.md) - Current Rust HLD
+> - [README.md](README.md) - User documentation
+> - [EXAMPLES.md](EXAMPLES.md) - Comprehensive usage examples
+
+**Version:** 2.0
+**Purpose:** Reference document showing C implementation patterns that informed the Rust rewrite
 
 ---
 
