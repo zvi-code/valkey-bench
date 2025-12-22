@@ -1,6 +1,6 @@
-# Valkey Search Benchmark
+# Valkey Benchmark Tool with Valkey-Search Support
 
-A high-performance benchmarking tool for Valkey/Redis, with specialized support for vector search operations. Written in Rust for maximum throughput and minimal latency overhead.
+A high-performance benchmarking tool for Valkey/Redis, with specialized support for valkey-search operations. Written in Rust for maximum throughput and minimal latency overhead.
 
 ## Features
 
