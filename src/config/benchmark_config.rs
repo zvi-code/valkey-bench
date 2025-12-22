@@ -3,6 +3,8 @@
 use super::cli::{CliArgs, OutputFormat, ReadFromReplica};
 use super::search_config::SearchConfig;
 use super::tls_config::TlsConfig;
+use super::workload_config::WorkloadConfig;
+use crate::workload::WorkloadType;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -222,5 +224,19 @@ impl BenchmarkConfig {
     /// Get clients per thread
     pub fn clients_per_thread(&self) -> u32 {
         self.clients.div_ceil(self.threads)
+    }
+
+    /// Create a WorkloadConfig for the given workload type using global defaults
+    ///
+    /// This is useful for creating per-component configs from global settings.
+    pub fn workload_config(&self, workload_type: WorkloadType) -> WorkloadConfig {
+        WorkloadConfig::from_type_with_defaults(
+            workload_type,
+            &self.key_prefix,
+            self.keyspace_len,
+            self.data_size,
+            self.search_config.clone(),
+            self.dataset_path.clone(),
+        )
     }
 }

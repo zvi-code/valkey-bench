@@ -6,13 +6,14 @@
 //! - Phase 2: Query those vectors (consumes IDs)
 
 use super::{PrepareResult, Workload, WorkloadType};
+use crate::config::{SearchConfig, WorkloadConfig};
 use crate::utils::{BenchmarkError, Result};
 
 /// A phase within a composite workload
 #[derive(Debug, Clone)]
 pub struct WorkloadPhase {
-    /// Workload type to run
-    pub workload_type: WorkloadType,
+    /// Configuration for this workload phase
+    pub config: WorkloadConfig,
     /// Number of requests for this phase (None means use default)
     pub requests: Option<u64>,
     /// Whether this phase produces IDs for subsequent phases
@@ -24,15 +25,32 @@ pub struct WorkloadPhase {
 }
 
 impl WorkloadPhase {
-    /// Create a new workload phase
-    pub fn new(workload_type: WorkloadType, requests: Option<u64>) -> Self {
+    /// Create a new workload phase with full config
+    pub fn new(config: WorkloadConfig, requests: Option<u64>) -> Self {
+        let name = config.workload_type.as_str().to_string();
         Self {
-            workload_type,
+            config,
+            requests,
+            produce_ids: false,
+            consume_ids: false,
+            name,
+        }
+    }
+
+    /// Create a new workload phase from just a workload type (uses defaults)
+    pub fn from_type(workload_type: WorkloadType, requests: Option<u64>) -> Self {
+        Self {
+            config: WorkloadConfig::new(workload_type),
             requests,
             produce_ids: false,
             consume_ids: false,
             name: workload_type.as_str().to_string(),
         }
+    }
+
+    /// Get the workload type (convenience accessor)
+    pub fn workload_type(&self) -> WorkloadType {
+        self.config.workload_type
     }
 
     /// Mark this phase as producing IDs
@@ -119,7 +137,7 @@ impl CompositeWorkload {
             };
 
             // Auto-detect produce/consume based on workload type
-            let mut phase = WorkloadPhase::new(workload_type, requests);
+            let mut phase = WorkloadPhase::from_type(workload_type, requests);
 
             // VecLoad produces IDs, VecQuery/VecDelete consume IDs
             if workload_type == WorkloadType::VecLoad {
@@ -151,12 +169,12 @@ impl CompositeWorkload {
 
     /// Check if any phase is a write operation
     pub fn has_writes(&self) -> bool {
-        self.phases.iter().any(|p| p.workload_type.is_write())
+        self.phases.iter().any(|p| p.config.is_write())
     }
 
     /// Check if any phase requires a dataset
     pub fn requires_dataset(&self) -> bool {
-        self.phases.iter().any(|p| p.workload_type.requires_dataset())
+        self.phases.iter().any(|p| p.config.requires_dataset())
     }
 
     /// Get the first phase
@@ -167,6 +185,33 @@ impl CompositeWorkload {
     /// Get phase at index
     pub fn phase_at(&self, idx: usize) -> Option<&WorkloadPhase> {
         self.phases.get(idx)
+    }
+
+    /// Apply global defaults to all phase configs
+    ///
+    /// This updates phases with values from BenchmarkConfig for settings
+    /// that weren't explicitly specified per-phase. This is typically called
+    /// after parsing to apply CLI defaults.
+    pub fn apply_defaults(
+        &mut self,
+        key_prefix: &str,
+        keyspace: u64,
+        data_size: usize,
+        search_config: Option<&SearchConfig>,
+        dataset_path: Option<&std::path::PathBuf>,
+    ) {
+        for phase in &mut self.phases {
+            // Apply defaults to each phase's config
+            phase.config.key_prefix = key_prefix.to_string();
+            phase.config.keyspace = keyspace;
+            phase.config.data_size = data_size;
+            if let Some(sc) = search_config {
+                phase.config.search_config = Some(sc.clone());
+            }
+            if let Some(dp) = dataset_path {
+                phase.config.dataset_path = Some(dp.clone());
+            }
+        }
     }
 }
 
@@ -201,15 +246,21 @@ impl CompositeWorkloadBuilder {
         Self::default()
     }
 
-    /// Add a phase with the given workload type
+    /// Add a phase with the given workload type (uses default config)
     pub fn phase(mut self, workload_type: WorkloadType) -> Self {
-        self.phases.push(WorkloadPhase::new(workload_type, None));
+        self.phases.push(WorkloadPhase::from_type(workload_type, None));
         self
     }
 
-    /// Add a phase with request count
+    /// Add a phase with request count (uses default config)
     pub fn phase_with_count(mut self, workload_type: WorkloadType, requests: u64) -> Self {
-        self.phases.push(WorkloadPhase::new(workload_type, Some(requests)));
+        self.phases.push(WorkloadPhase::from_type(workload_type, Some(requests)));
+        self
+    }
+
+    /// Add a phase with full configuration
+    pub fn phase_with_config(mut self, config: WorkloadConfig, requests: Option<u64>) -> Self {
+        self.phases.push(WorkloadPhase::new(config, requests));
         self
     }
 
@@ -249,10 +300,10 @@ mod tests {
     fn test_parse_simple() {
         let cw = CompositeWorkload::parse("vec-load:10000,vec-query:1000").unwrap();
         assert_eq!(cw.len(), 2);
-        assert_eq!(cw.phases[0].workload_type, WorkloadType::VecLoad);
+        assert_eq!(cw.phases[0].workload_type(), WorkloadType::VecLoad);
         assert_eq!(cw.phases[0].requests, Some(10000));
         assert!(cw.phases[0].produce_ids);
-        assert_eq!(cw.phases[1].workload_type, WorkloadType::VecQuery);
+        assert_eq!(cw.phases[1].workload_type(), WorkloadType::VecQuery);
         assert_eq!(cw.phases[1].requests, Some(1000));
         assert!(cw.phases[1].consume_ids);
     }
@@ -261,9 +312,9 @@ mod tests {
     fn test_parse_no_count() {
         let cw = CompositeWorkload::parse("set,get").unwrap();
         assert_eq!(cw.len(), 2);
-        assert_eq!(cw.phases[0].workload_type, WorkloadType::Set);
+        assert_eq!(cw.phases[0].workload_type(), WorkloadType::Set);
         assert!(cw.phases[0].requests.is_none());
-        assert_eq!(cw.phases[1].workload_type, WorkloadType::Get);
+        assert_eq!(cw.phases[1].workload_type(), WorkloadType::Get);
         assert!(cw.phases[1].requests.is_none());
     }
 
@@ -329,9 +380,9 @@ mod tests {
     #[test]
     fn test_phase_accessors() {
         let cw = CompositeWorkload::parse("set:100,get:200,ping:300").unwrap();
-        assert_eq!(cw.first_phase().unwrap().workload_type, WorkloadType::Set);
-        assert_eq!(cw.phase_at(1).unwrap().workload_type, WorkloadType::Get);
-        assert_eq!(cw.phase_at(2).unwrap().workload_type, WorkloadType::Ping);
+        assert_eq!(cw.first_phase().unwrap().workload_type(), WorkloadType::Set);
+        assert_eq!(cw.phase_at(1).unwrap().workload_type(), WorkloadType::Get);
+        assert_eq!(cw.phase_at(2).unwrap().workload_type(), WorkloadType::Ping);
         assert!(cw.phase_at(3).is_none());
     }
 }

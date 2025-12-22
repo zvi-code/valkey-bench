@@ -1005,7 +1005,15 @@ impl Orchestrator {
 
         // Check if parallel workload is specified
         if let Some(ref parallel_spec) = self.config.parallel {
-            let parallel_workload = ParallelWorkload::parse(parallel_spec)?;
+            let mut parallel_workload = ParallelWorkload::parse(parallel_spec)?;
+            // Apply global defaults from config to each component
+            parallel_workload.apply_defaults(
+                &self.config.key_prefix,
+                self.config.keyspace_len,
+                self.config.data_size,
+                self.config.search_config.as_ref(),
+                self.config.dataset_path.as_ref(),
+            );
             if !self.config.quiet {
                 println!("\nRunning parallel test: {}", parallel_workload.name());
             }
@@ -1040,16 +1048,10 @@ impl Orchestrator {
     pub fn run_parallel_test(&self, parallel: &ParallelWorkload) -> Result<BenchmarkResult> {
         let cluster_mode = self.cluster_topology.is_some();
 
-        // Create templates for each component workload
+        // Create templates for each component workload using per-component configs
         let mut weighted_templates = Vec::new();
         for component in parallel.components() {
-            let template = create_template(
-                component.workload_type,
-                &self.config.key_prefix,
-                self.config.data_size,
-                self.config.search_config.as_ref(),
-                cluster_mode,
-            );
+            let template = component.config.build_template(cluster_mode);
             let buffer = template.build(self.config.pipeline as usize);
             weighted_templates.push((buffer, component.weight));
         }
