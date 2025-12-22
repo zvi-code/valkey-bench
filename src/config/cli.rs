@@ -160,6 +160,13 @@ pub struct CliArgs {
     #[arg(long = "parallel")]
     pub parallel: Option<String>,
 
+    /// Composite workload for sequential phases
+    ///
+    /// Format: "workload1:count1,workload2:count2,..."
+    /// Example: "vec-load:10000,vec-query:1000" for load then query
+    #[arg(long = "composite")]
+    pub composite: Option<String>,
+
     /// Custom command to benchmark (RESP format)
     #[arg(long = "command")]
     pub custom_command: Option<String>,

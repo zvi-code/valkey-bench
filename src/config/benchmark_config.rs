@@ -67,6 +67,7 @@ pub struct BenchmarkConfig {
     // Workload
     pub tests: Vec<String>,
     pub parallel: Option<String>,
+    pub composite: Option<String>,
     pub custom_command: Option<String>,
 
     // Vector search
@@ -190,6 +191,7 @@ impl BenchmarkConfig {
 
             tests,
             parallel: args.parallel.clone(),
+            composite: args.composite.clone(),
             custom_command: args.custom_command.clone(),
 
             search_config,

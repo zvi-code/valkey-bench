@@ -2,6 +2,7 @@
 
 pub mod addressable;
 pub mod command_template;
+pub mod composite;
 pub mod context;
 pub mod iteration;
 pub mod key_format;
@@ -26,6 +27,7 @@ pub use context::{
 pub use iteration::{IterationState, IterationStrategy};
 pub use lifecycle::{LegacyWorkloadAdapter, PrepareResult, Workload};
 pub use parallel::{ParallelComponent, ParallelWorkload, ParallelWorkloadBuilder};
+pub use composite::{CompositeWorkload, CompositeWorkloadBuilder, WorkloadPhase};
 pub use key_format::{
     extract_numeric_ids_from_keys, KeyFormat, CLUSTER_TAG_INNER_LEN, CLUSTER_TAG_LEN,
     DEFAULT_KEY_WIDTH, TAG_KEY_SEPARATOR,
