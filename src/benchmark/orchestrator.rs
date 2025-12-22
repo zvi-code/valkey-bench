@@ -15,8 +15,8 @@ use super::counters::GlobalCounters;
 use super::event_worker::{EventWorker, EventWorkerResult, RecallStats};
 use crate::client::{ConnectionFactory, ControlPlane, ControlPlaneExt};
 use crate::cluster::{
-    build_vector_id_mappings, ClusterScanConfig, ClusterTagMap, ClusterTopology, ProtectedVectorIds,
-    TopologyManager,
+    build_vector_id_mappings, create_backend, AutoDetectBackend, ClusterBackend, ClusterScanConfig,
+    ClusterTagMap, ClusterTopology, ProtectedVectorIds, TopologyManager,
 };
 use crate::config::BenchmarkConfig;
 use crate::dataset::DatasetContext;
@@ -26,7 +26,7 @@ use crate::metrics::snapshot::{compare_snapshots, print_per_node_matrix, Cluster
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
-    create_index, create_template, create_workload_context, drop_index, get_index_info, NumericFieldSet, WorkloadType,
+    create_index, create_template, create_workload_context_with_iteration, drop_index, get_index_info, NumericFieldSet, WorkloadType,
 };
 
 /// Keyspace hit/miss statistics from INFO stats
@@ -178,6 +178,8 @@ pub struct Orchestrator {
     cluster_tag_map: Option<Arc<ClusterTagMap>>,
     /// Protected vector IDs (ground truth) for deletion benchmarks
     protected_ids: Option<Arc<ProtectedVectorIds>>,
+    /// Backend abstraction for engine-specific behavior (ElastiCache, MemoryDB, Valkey OSS)
+    backend: Arc<dyn ClusterBackend>,
 }
 
 impl Orchestrator {
@@ -193,8 +195,9 @@ impl Orchestrator {
             dbnum: config.dbnum,
         };
 
-        // Discover cluster topology if cluster mode is enabled or auto-detect
-        let cluster_topology = Self::discover_cluster(&config, &connection_factory)?;
+        // Discover cluster topology and detect backend engine type
+        let (cluster_topology, backend) =
+            Self::discover_cluster_and_backend(&config, &connection_factory)?;
 
         // Create topology manager for dynamic updates (cluster mode only)
         let topology_manager = cluster_topology.as_ref().map(|topo| {
@@ -219,14 +222,19 @@ impl Orchestrator {
             topology_manager,
             cluster_tag_map: None,
             protected_ids: None,
+            backend,
         })
     }
 
-    /// Create orchestrator with an existing cluster topology (skips discovery)
+    /// Create orchestrator with an existing cluster topology and backend (skips discovery)
     ///
     /// This is useful for optimization iterations where we don't want to
     /// rediscover the cluster topology on each iteration (saves connections).
-    pub fn with_topology(config: BenchmarkConfig, topology: Option<ClusterTopology>) -> Result<Self> {
+    pub fn with_topology(
+        config: BenchmarkConfig,
+        topology: Option<ClusterTopology>,
+        backend: Arc<dyn ClusterBackend>,
+    ) -> Result<Self> {
         let connection_factory = ConnectionFactory {
             connect_timeout: Duration::from_millis(config.connect_timeout_ms),
             read_timeout: Duration::from_millis(config.request_timeout_ms),
@@ -260,6 +268,7 @@ impl Orchestrator {
             topology_manager,
             cluster_tag_map: None,
             protected_ids: None,
+            backend,
         })
     }
 
@@ -311,19 +320,40 @@ impl Orchestrator {
         self.protected_ids = Some(protected);
     }
 
-    /// Discover cluster topology by connecting to seed node
-    fn discover_cluster(
+    /// Get the backend for engine-specific behavior
+    pub fn backend(&self) -> &Arc<dyn ClusterBackend> {
+        &self.backend
+    }
+
+    /// Get the detected engine type
+    pub fn engine_type(&self) -> EngineType {
+        self.backend.engine_type()
+    }
+
+    /// Discover cluster topology and detect backend engine type
+    fn discover_cluster_and_backend(
         config: &BenchmarkConfig,
         factory: &ConnectionFactory,
-    ) -> Result<Option<ClusterTopology>> {
+    ) -> Result<(Option<ClusterTopology>, Arc<dyn ClusterBackend>)> {
+        use crate::cluster::UnknownBackend;
+
         if config.addresses.is_empty() {
-            return Ok(None);
+            return Ok((None, Arc::new(UnknownBackend)));
         }
 
         let addr = &config.addresses[0];
 
-        // Create a temporary connection to discover topology
+        // Create a temporary connection to discover topology and detect engine
         let mut conn = factory.create(&addr.host, addr.port)?;
+
+        // Detect engine type first
+        let auto_detect = AutoDetectBackend::new();
+        let engine_type = auto_detect.detect(&mut conn).unwrap_or(EngineType::Unknown);
+        let backend: Arc<dyn ClusterBackend> = Arc::from(create_backend(engine_type));
+
+        if !config.quiet {
+            info!("Detected engine type: {}", backend.name());
+        }
 
         // Try CLUSTER NODES to see if this is a cluster
         match conn.cluster_nodes() {
@@ -350,7 +380,7 @@ impl Orchestrator {
                     }
                 }
 
-                Ok(Some(topology))
+                Ok((Some(topology), backend))
             }
             Err(e) => {
                 // Not a cluster or cluster commands disabled
@@ -370,7 +400,7 @@ impl Orchestrator {
                 if !config.quiet {
                     info!("Running in standalone mode (CLUSTER NODES not available)");
                 }
-                Ok(None)
+                Ok((None, backend))
             }
         }
     }
@@ -883,7 +913,7 @@ impl Orchestrator {
             let worker_numeric_fields = numeric_fields.clone();
 
             // Create workload context for this worker
-            let workload_ctx = create_workload_context(
+            let workload_ctx = create_workload_context_with_iteration(
                 workload,
                 self.dataset.clone(),
                 self.cluster_tag_map.clone(),
@@ -895,6 +925,7 @@ impl Orchestrator {
                 self.config.seed.wrapping_add(worker_id as u64),
                 k,
                 key_prefix,
+                self.config.iteration.as_deref(),
             );
 
             let handle = thread::Builder::new()

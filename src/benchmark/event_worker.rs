@@ -462,6 +462,90 @@ impl TokenBucket {
     }
 }
 
+/// Weighted command templates for parallel workloads
+pub struct WeightedTemplates {
+    /// Command templates (one per workload type)
+    templates: Vec<CommandBuffer>,
+    /// Cumulative weights for O(1) selection [0.3, 0.8, 1.0] for 30%, 50%, 20%
+    cumulative_weights: Vec<f64>,
+}
+
+impl WeightedTemplates {
+    /// Create from a single template (non-parallel mode)
+    pub fn single(template: CommandBuffer) -> Self {
+        Self {
+            templates: vec![template],
+            cumulative_weights: vec![1.0],
+        }
+    }
+
+    /// Create from multiple templates with weights
+    pub fn weighted(templates: Vec<(CommandBuffer, f64)>) -> Self {
+        if templates.is_empty() {
+            panic!("WeightedTemplates requires at least one template");
+        }
+
+        let total: f64 = templates.iter().map(|(_, w)| w).sum();
+        let mut cumulative = Vec::with_capacity(templates.len());
+        let mut sum = 0.0;
+
+        let (buffers, weights): (Vec<_>, Vec<_>) = templates.into_iter().unzip();
+
+        for w in weights {
+            sum += w / total;
+            cumulative.push(sum);
+        }
+
+        // Ensure last element is exactly 1.0
+        if let Some(last) = cumulative.last_mut() {
+            *last = 1.0;
+        }
+
+        Self {
+            templates: buffers,
+            cumulative_weights: cumulative,
+        }
+    }
+
+    /// Select a template index based on a random value in [0, 1)
+    #[inline]
+    pub fn select_index(&self, random: f64) -> usize {
+        if self.templates.len() == 1 {
+            return 0;
+        }
+        match self
+            .cumulative_weights
+            .binary_search_by(|w| w.partial_cmp(&random).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            Ok(idx) => idx.min(self.templates.len() - 1),
+            Err(idx) => idx.min(self.templates.len() - 1),
+        }
+    }
+
+    /// Get template at index
+    #[inline]
+    pub fn get(&self, index: usize) -> &CommandBuffer {
+        &self.templates[index]
+    }
+
+    /// Get the first/primary template (for single-template mode)
+    #[inline]
+    pub fn primary(&self) -> &CommandBuffer {
+        &self.templates[0]
+    }
+
+    /// Check if this is parallel mode (multiple templates)
+    #[inline]
+    pub fn is_parallel(&self) -> bool {
+        self.templates.len() > 1
+    }
+
+    /// Number of templates
+    pub fn len(&self) -> usize {
+        self.templates.len()
+    }
+}
+
 /// Event-driven benchmark worker
 pub struct EventWorker {
     id: usize,
@@ -473,7 +557,8 @@ pub struct EventWorker {
     pipeline: usize,
     /// Seed for deterministic random key generation
     seed: u64,
-    command_template: CommandBuffer,
+    /// Command templates (single or weighted for parallel mode)
+    templates: WeightedTemplates,
     error_count: u64,
     requests_processed: u64,
     /// Workload-specific context (handles ID claiming, recall computation, etc.)
@@ -507,6 +592,29 @@ impl EventWorker {
         clients_per_addr: usize,
         config: &BenchmarkConfig,
         command_template: CommandBuffer,
+        topology: Option<&ClusterTopology>,
+        workload_ctx: Box<dyn WorkloadContext>,
+    ) -> io::Result<Self> {
+        Self::with_templates(
+            id,
+            addresses,
+            clients_per_addr,
+            config,
+            WeightedTemplates::single(command_template),
+            topology,
+            workload_ctx,
+        )
+    }
+
+    /// Create new event-driven worker with weighted templates
+    ///
+    /// Used for parallel workload execution with weighted traffic distribution.
+    pub fn with_templates(
+        id: usize,
+        addresses: Vec<(String, u16)>,
+        clients_per_addr: usize,
+        config: &BenchmarkConfig,
+        templates: WeightedTemplates,
         topology: Option<&ClusterTopology>,
         workload_ctx: Box<dyn WorkloadContext>,
     ) -> io::Result<Self> {
@@ -567,7 +675,7 @@ impl EventWorker {
                 let mut client = EventClient::new(
                     mio_stream,
                     token,
-                    command_template.bytes.clone(),
+                    templates.primary().bytes.clone(),
                     config.pipeline as usize,
                 );
 
@@ -619,7 +727,7 @@ impl EventWorker {
             histogram,
             pipeline: config.pipeline as usize,
             seed: config.seed,
-            command_template,
+            templates,
             error_count: 0,
             requests_processed: 0,
             workload_ctx,
@@ -791,9 +899,11 @@ impl EventWorker {
         key_num: u64,
         _counters: &GlobalCounters,
     ) {
-        for (cmd_idx, phs) in self.command_template.placeholders.iter().enumerate() {
+        // Get the active template (primary for now, will support selection later)
+        let template = self.templates.primary();
+        for (cmd_idx, phs) in template.placeholders.iter().enumerate() {
             for ph in phs {
-                let offset = self.command_template.absolute_offset(cmd_idx, ph.offset);
+                let offset = template.absolute_offset(cmd_idx, ph.offset);
                 match ph.placeholder_type {
                     PlaceholderType::Key => {
                         // For VecDelete: key is directly the claimed ID
@@ -815,7 +925,7 @@ impl EventWorker {
                             // Also set the Key placeholder with the vector ID
                             for ph2 in phs {
                                 if matches!(ph2.placeholder_type, PlaceholderType::Key) {
-                                    let key_offset = self.command_template.absolute_offset(cmd_idx, ph2.offset);
+                                    let key_offset = template.absolute_offset(cmd_idx, ph2.offset);
                                     write_fixed_width_u64(&mut self.clients[client_idx].write_buf, key_offset, key_num, ph2.len);
                                     break;
                                 }

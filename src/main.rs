@@ -252,6 +252,7 @@ fn run_optimization(
     // Extract shared resources from base orchestrator for iteration reuse
     // This avoids rediscovering cluster topology on each iteration (prevents port exhaustion)
     let shared_topology = orchestrator.cluster_topology().cloned();
+    let shared_backend = orchestrator.backend().clone();
     let shared_tag_map = orchestrator.cluster_tag_map();
     let shared_protected_ids = orchestrator.protected_ids();
 
@@ -284,8 +285,8 @@ fn run_optimization(
             }
         }
 
-        // Create orchestrator with shared topology (avoids rediscovery connections)
-        let mut iter_orchestrator = Orchestrator::with_topology(run_config.clone(), shared_topology.clone())?;
+        // Create orchestrator with shared topology and backend (avoids rediscovery connections)
+        let mut iter_orchestrator = Orchestrator::with_topology(run_config.clone(), shared_topology.clone(), shared_backend.clone())?;
         if let Some(ref ds) = dataset {
             iter_orchestrator.set_dataset_arc(ds.clone());
         }

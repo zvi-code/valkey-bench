@@ -49,6 +49,7 @@ pub struct BenchmarkConfig {
     pub warmup_requests: u64,
     pub keyspace_len: u64,
     pub sequential: bool,
+    pub iteration: Option<String>,
     pub key_prefix: String,
     pub data_size: usize,
     pub seed: u64,
@@ -64,6 +65,7 @@ pub struct BenchmarkConfig {
 
     // Workload
     pub tests: Vec<String>,
+    pub parallel: Option<String>,
     pub custom_command: Option<String>,
 
     // Vector search
@@ -172,6 +174,7 @@ impl BenchmarkConfig {
             warmup_requests: args.warmup_requests,
             keyspace_len,
             sequential: args.sequential,
+            iteration: args.iteration.clone(),
             key_prefix: args.key_prefix.clone(),
             data_size: args.data_size,
             seed: args.seed,
@@ -184,6 +187,7 @@ impl BenchmarkConfig {
             requests_per_second: args.requests_per_second,
 
             tests,
+            parallel: args.parallel.clone(),
             custom_command: args.custom_command.clone(),
 
             search_config,

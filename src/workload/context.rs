@@ -14,7 +14,10 @@ use crate::client::PlaceholderType;
 use crate::cluster::{ClusterTagMap, ProtectedVectorIds};
 use crate::dataset::DatasetContext;
 use crate::utils::RespValue;
-use crate::workload::{extract_numeric_ids, parse_search_response, NumericFieldSet, TagDistributionSet, WorkloadType};
+use crate::workload::{
+    extract_numeric_ids, parse_search_response, IterationStrategy, NumericFieldSet,
+    TagDistributionSet, WorkloadType,
+};
 
 /// Metrics collected by workload context
 #[derive(Debug, Default)]
@@ -96,27 +99,42 @@ pub trait WorkloadContext: Send {
 /// Context for simple key-value workloads without dataset or recall
 pub struct SimpleContext {
     keyspace_len: u64,
-    sequential: bool,
-    seed: u64,
+    strategy: IterationStrategy,
 }
 
 impl SimpleContext {
+    /// Create a new SimpleContext with sequential or random iteration (backward compatible)
     pub fn new(keyspace_len: u64, sequential: bool, seed: u64) -> Self {
+        let strategy = if sequential {
+            IterationStrategy::Sequential
+        } else {
+            IterationStrategy::Random { seed }
+        };
         Self {
             keyspace_len,
-            sequential,
-            seed,
+            strategy,
         }
+    }
+
+    /// Create a new SimpleContext with a custom iteration strategy
+    pub fn with_strategy(keyspace_len: u64, strategy: IterationStrategy) -> Self {
+        Self {
+            keyspace_len,
+            strategy,
+        }
+    }
+
+    /// Get the iteration strategy
+    pub fn strategy(&self) -> &IterationStrategy {
+        &self.strategy
     }
 }
 
 impl WorkloadContext for SimpleContext {
     fn claim_next_id(&self, counters: &GlobalCounters) -> Option<u64> {
-        if self.sequential {
-            Some(counters.next_seq_key(self.keyspace_len))
-        } else {
-            Some(counters.next_random_key(self.seed, self.keyspace_len))
-        }
+        // Get the counter value for this iteration
+        let counter = counters.next_seq_key(u64::MAX);
+        Some(self.strategy.next_key(counter, self.keyspace_len))
     }
 
     fn next_dataset_idx(&self, _counters: &GlobalCounters) -> Option<u64> {
@@ -499,6 +517,37 @@ pub fn create_workload_context(
     k: usize,
     key_prefix: &str,
 ) -> Box<dyn WorkloadContext> {
+    create_workload_context_with_iteration(
+        workload_type,
+        dataset,
+        tag_map,
+        protected_ids,
+        tag_distributions,
+        numeric_fields,
+        keyspace_len,
+        sequential,
+        seed,
+        k,
+        key_prefix,
+        None, // No custom iteration strategy
+    )
+}
+
+/// Create appropriate WorkloadContext with optional custom iteration strategy
+pub fn create_workload_context_with_iteration(
+    workload_type: WorkloadType,
+    dataset: Option<Arc<DatasetContext>>,
+    tag_map: Option<Arc<ClusterTagMap>>,
+    protected_ids: Option<Arc<ProtectedVectorIds>>,
+    tag_distributions: Option<TagDistributionSet>,
+    numeric_fields: NumericFieldSet,
+    keyspace_len: u64,
+    sequential: bool,
+    seed: u64,
+    k: usize,
+    key_prefix: &str,
+    iteration: Option<&str>,
+) -> Box<dyn WorkloadContext> {
     match workload_type {
         WorkloadType::VecLoad => {
             let ds = dataset.expect("VecLoad requires dataset");
@@ -518,6 +567,14 @@ pub fn create_workload_context(
         }
         _ => {
             // All other workloads use simple key-value context
+            // If a custom iteration strategy is provided, use it
+            if let Some(iter_str) = iteration {
+                if let Ok(strategy) = IterationStrategy::parse(iter_str) {
+                    return Box::new(SimpleContext::with_strategy(keyspace_len, strategy));
+                }
+                // If parsing fails, log warning and fall back to default
+                eprintln!("Warning: Invalid iteration strategy '{}', using default", iter_str);
+            }
             Box::new(SimpleContext::new(keyspace_len, sequential, seed))
         }
     }

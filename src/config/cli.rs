@@ -108,6 +108,16 @@ pub struct CliArgs {
     #[arg(long = "sequential")]
     pub sequential: bool,
 
+    /// Iteration strategy for key generation
+    ///
+    /// Formats:
+    /// - "sequential" or "seq"
+    /// - "random" or "random:SEED"
+    /// - "subset:START:END"
+    /// - "zipfian:SKEW" or "zipfian:SKEW:SEED"
+    #[arg(long = "iteration")]
+    pub iteration: Option<String>,
+
     /// Key prefix for generated keys
     #[arg(long = "key-prefix", default_value = "key:")]
     pub key_prefix: String,
@@ -133,6 +143,13 @@ pub struct CliArgs {
     /// Benchmark type(s) to run
     #[arg(short = 't', long = "tests", value_delimiter = ',')]
     pub tests: Option<Vec<String>>,
+
+    /// Parallel workload mix with weighted traffic
+    ///
+    /// Format: "workload1:weight1,workload2:weight2,..."
+    /// Example: "get:0.8,set:0.2" for 80% GET, 20% SET
+    #[arg(long = "parallel")]
+    pub parallel: Option<String>,
 
     /// Custom command to benchmark (RESP format)
     #[arg(long = "command")]

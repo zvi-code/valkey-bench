@@ -2,8 +2,11 @@
 
 pub mod command_template;
 pub mod context;
+pub mod iteration;
 pub mod key_format;
+pub mod lifecycle;
 pub mod numeric_field;
+pub mod parallel;
 pub mod search_ops;
 pub mod tag_distribution;
 pub mod template_factory;
@@ -11,9 +14,12 @@ pub mod workload_type;
 
 pub use command_template::{CommandTemplate, TemplateArg};
 pub use context::{
-    create_workload_context, SimpleContext, VectorDeleteContext, VectorLoadContext,
+    create_workload_context, create_workload_context_with_iteration, SimpleContext, VectorDeleteContext, VectorLoadContext,
     VectorQueryContext, VectorUpdateContext, WorkloadContext, WorkloadMetrics,
 };
+pub use iteration::{IterationState, IterationStrategy};
+pub use lifecycle::{LegacyWorkloadAdapter, PrepareResult, Workload};
+pub use parallel::{ParallelComponent, ParallelWorkload, ParallelWorkloadBuilder};
 pub use key_format::{
     extract_numeric_ids_from_keys, KeyFormat, CLUSTER_TAG_INNER_LEN, CLUSTER_TAG_LEN,
     DEFAULT_KEY_WIDTH, TAG_KEY_SEPARATOR,
