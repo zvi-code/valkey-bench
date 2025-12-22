@@ -1001,6 +1001,3 @@ In benchmark mode:
 - Enable read-from-replica for read workloads (`--rfr prefer-replica`)
 - Use release build (`cargo build --release`)
 
-## License
-
-This project is part of the Valkey ecosystem.
