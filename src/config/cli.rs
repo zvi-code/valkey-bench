@@ -9,7 +9,10 @@ use std::path::PathBuf;
 /// High-performance benchmark tool for Valkey with vector search support
 #[derive(Parser, Debug, Clone)]
 #[command(name = "valkey-search-benchmark")]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = "High-performance benchmark tool for Valkey/Redis with vector search support.\n\n\
+Supports parallel workloads (--parallel), composite workloads (--composite),\n\
+iteration strategies (--iteration), and addressable spaces (--address-type).\n\n\
+For comprehensive examples, see EXAMPLES.md in the project directory.")]
 #[command(arg_required_else_help = false)]
 #[command(disable_help_flag = true)]
 #[command(trailing_var_arg = true)]

@@ -11,12 +11,18 @@ A high-performance benchmarking tool for Valkey/Redis, with specialized support 
 - **Vector Search**: FT.CREATE, FT.SEARCH with recall@k computation against ground truth
 - **Filtered Search**: Tag and numeric field support with configurable distributions
 - **Multiple Workloads**: PING, GET, SET, HSET, LPUSH, RPUSH, SADD, ZADD, and vector operations
+- **Parallel Workloads**: Mixed traffic with weighted distribution (e.g., 80% GET, 20% SET)
+- **Composite Workloads**: Sequential phases for setup-then-test patterns
+- **Iteration Strategies**: Sequential, random, subset, and zipfian key access patterns
+- **Addressable Spaces**: Hash field and JSON path iteration beyond simple keys
 - **Rate Limiting**: Token bucket rate limiter for controlled load testing
 - **TLS Support**: Full TLS/SSL support with certificate authentication
 - **CLI Mode**: Interactive command-line interface (like valkey-cli)
 - **JSON Output**: Machine-readable results for CI/CD integration
 - **Parameter Optimizer**: Automatic tuning of clients, threads, pipeline, and ef_search to maximize throughput under constraints
 - **Base RTT Measurement**: Measures single-client PING and GET-miss latency to establish network baseline
+
+For comprehensive examples of all features, see [EXAMPLES.md](EXAMPLES.md).
 
 ## Supported Platforms
 

@@ -463,6 +463,7 @@ impl TokenBucket {
 }
 
 /// Weighted command templates for parallel workloads
+#[derive(Clone)]
 pub struct WeightedTemplates {
     /// Command templates (one per workload type)
     templates: Vec<CommandBuffer>,

@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tracing::info;
 
 use super::counters::GlobalCounters;
-use super::event_worker::{EventWorker, EventWorkerResult, RecallStats};
+use super::event_worker::{EventWorker, EventWorkerResult, RecallStats, WeightedTemplates};
 use crate::client::{ConnectionFactory, ControlPlane, ControlPlaneExt};
 use crate::cluster::{
     build_vector_id_mappings, create_backend, AutoDetectBackend, ClusterBackend, ClusterScanConfig,
@@ -26,7 +26,8 @@ use crate::metrics::snapshot::{compare_snapshots, print_per_node_matrix, Cluster
 use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsReporter, NodeMetrics};
 use crate::utils::Result;
 use crate::workload::{
-    create_index, create_template, create_workload_context_with_iteration, drop_index, get_index_info, NumericFieldSet, WorkloadType,
+    create_index, create_template, create_workload_context_with_iteration, drop_index, get_index_info,
+    NumericFieldSet, ParallelWorkload, SimpleContext, Workload, WorkloadType,
 };
 
 /// Keyspace hit/miss statistics from INFO stats
@@ -1020,6 +1021,20 @@ impl Orchestrator {
     pub fn run_all(&self) -> Result<Vec<BenchmarkResult>> {
         let mut results = Vec::new();
 
+        // Check if parallel workload is specified
+        if let Some(ref parallel_spec) = self.config.parallel {
+            let parallel_workload = ParallelWorkload::parse(parallel_spec)?;
+            if !self.config.quiet {
+                println!("\nRunning parallel test: {}", parallel_workload.name());
+            }
+            let result = self.run_parallel_test(&parallel_workload)?;
+            if !self.config.quiet {
+                result.print_summary();
+            }
+            results.push(result);
+            return Ok(results);
+        }
+
         for test_name in &self.config.tests {
             let workload = WorkloadType::parse(test_name).ok_or_else(|| {
                 crate::utils::BenchmarkError::Config(format!("Unknown test: {}", test_name))
@@ -1037,6 +1052,166 @@ impl Orchestrator {
         }
 
         Ok(results)
+    }
+
+    /// Run a parallel workload with weighted traffic
+    pub fn run_parallel_test(&self, parallel: &ParallelWorkload) -> Result<BenchmarkResult> {
+        let cluster_mode = self.cluster_topology.is_some();
+
+        // Create templates for each component workload
+        let mut weighted_templates = Vec::new();
+        for component in parallel.components() {
+            let template = create_template(
+                component.workload_type,
+                &self.config.key_prefix,
+                self.config.data_size,
+                self.config.search_config.as_ref(),
+                cluster_mode,
+            );
+            let buffer = template.build(self.config.pipeline as usize);
+            weighted_templates.push((buffer, component.weight));
+        }
+
+        let templates = WeightedTemplates::weighted(weighted_templates);
+
+        // Create global counters
+        let counters = Arc::new(if let Some(duration) = self.config.duration_secs {
+            GlobalCounters::with_duration(duration)
+        } else {
+            GlobalCounters::with_requests(self.config.requests)
+        });
+
+        // Get addresses for workers
+        let addresses = self.get_benchmark_addresses();
+        if addresses.is_empty() {
+            return Err(crate::utils::BenchmarkError::Config(
+                "No available server addresses".to_string(),
+            ));
+        }
+
+        let clients_per_thread = self.config.clients_per_thread() as usize;
+        if clients_per_thread == 0 {
+            return Err(crate::utils::BenchmarkError::Config(
+                format!(
+                    "Not enough clients ({}) for threads ({})",
+                    self.config.clients, self.config.threads
+                ),
+            ));
+        }
+
+        // Capture snapshot before benchmark
+        let snapshot_before = self.capture_info_snapshot("before");
+        let search_snapshot_before = self.capture_search_snapshot("before");
+
+        // Spawn worker threads
+        let mut handles: Vec<thread::JoinHandle<EventWorkerResult>> =
+            Vec::with_capacity(self.config.threads as usize);
+
+        let start_time = Instant::now();
+        let topology = self.cluster_topology.clone();
+
+        for worker_id in 0..self.config.threads as usize {
+            let config = Arc::clone(&self.config);
+            let counters = Arc::clone(&counters);
+            let worker_templates = templates.clone();
+            let addrs = addresses.clone();
+            let topo = topology.clone();
+
+            // Use SimpleContext for parallel workloads (key-value workloads)
+            let workload_ctx = Box::new(SimpleContext::new(
+                self.config.keyspace_len,
+                self.config.sequential,
+                self.config.seed.wrapping_add(worker_id as u64),
+            ));
+
+            let handle = thread::Builder::new()
+                .name(format!("event-worker-{}", worker_id))
+                .spawn(move || {
+                    match EventWorker::with_templates(
+                        worker_id,
+                        addrs,
+                        clients_per_thread,
+                        &config,
+                        worker_templates,
+                        topo.as_ref(),
+                        workload_ctx,
+                    ) {
+                        Ok(worker) => worker.run(counters),
+                        Err(e) => {
+                            if !config.quiet {
+                                eprintln!("Worker {}: Failed to create: {}", worker_id, e);
+                            }
+                            EventWorkerResult {
+                                worker_id,
+                                histogram: Histogram::new_with_bounds(1, 3_600_000_000, 3)
+                                    .expect("Failed to create histogram"),
+                                recall_stats: RecallStats::new(),
+                                redirect_count: 0,
+                                topology_refresh_count: 0,
+                                error_count: 1,
+                                requests_processed: 0,
+                            }
+                        }
+                    }
+                })
+                .expect("Failed to spawn worker thread");
+
+            handles.push(handle);
+        }
+
+        // Collect results
+        let mut merged_histogram =
+            Histogram::new_with_bounds(1, 3_600_000_000, 3).expect("Failed to create histogram");
+        let mut merged_recall = RecallStats::new();
+        let mut total_requests = 0u64;
+        let mut total_errors = 0u64;
+
+        for handle in handles {
+            let result = handle.join().expect("Worker thread panicked");
+            merged_histogram.add(&result.histogram).ok();
+            merged_recall.merge(&result.recall_stats);
+            total_requests += result.requests_processed;
+            total_errors += result.error_count;
+        }
+
+        let elapsed = start_time.elapsed();
+        let elapsed_secs = elapsed.as_secs_f64();
+        let qps = total_requests as f64 / elapsed_secs;
+
+        // Capture snapshot after benchmark
+        let snapshot_after = self.capture_info_snapshot("after");
+        let search_snapshot_after = self.capture_search_snapshot("after");
+
+        // Calculate keyspace stats delta
+        let stats_before = Self::keyspace_stats_from_snapshot(&snapshot_before);
+        let stats_after = Self::keyspace_stats_from_snapshot(&snapshot_after);
+
+        // Build result
+        let result = BenchmarkResult {
+            test_name: parallel.name().to_string(),
+            total_requests,
+            duration: elapsed,
+            throughput: qps,
+            histogram: merged_histogram,
+            recall_stats: merged_recall,
+            error_count: total_errors,
+            node_metrics: Vec::new(),
+            keyspace_stats: KeyspaceStats {
+                hits: stats_after.hits.saturating_sub(stats_before.hits),
+                misses: stats_after.misses.saturating_sub(stats_before.misses),
+            },
+        };
+
+        // Display per-node statistics matrix
+        if !self.config.quiet && self.cluster_topology.is_some() {
+            let topo = self.cluster_topology.as_ref();
+            let info_diff = compare_snapshots(&snapshot_before, &snapshot_after, &default_info_fields());
+            print_per_node_matrix(&info_diff, topo);
+            let search_diff = compare_snapshots(&search_snapshot_before, &search_snapshot_after, &default_search_info_fields());
+            print_per_node_matrix(&search_diff, topo);
+        }
+
+        Ok(result)
     }
 
     /// Create vector search index using FT.CREATE
