@@ -23,6 +23,7 @@ export DATASET="/path/to/your/vectors.bin"
 - [Addressable Spaces (Hash Fields, JSON Paths)](#addressable-spaces-hash-fields-json-paths)
 - [Numeric Field Configurations](#numeric-field-configurations)
 - [Tag-Based Filtered Search](#tag-based-filtered-search)
+- [Query-Side Numeric Filters](#query-side-numeric-filters)
 - [Vector Search Workloads](#vector-search-workloads)
 - [Parameter Optimization](#parameter-optimization)
 - [Performance Tuning Recipes](#performance-tuning-recipes)
@@ -571,6 +572,133 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
   --numeric-field-config "price:float:uniform:4.99:299.99:2" \
   --numeric-field-config "rating:float:normal:4.2:0.5:1" \
   -n 100000 -c 100 --threads 8
+```
+
+---
+
+## Query-Side Numeric Filters
+
+Use `--numeric-filter` to add numeric range constraints to FT.SEARCH queries. This filters results by numeric field values at query time.
+
+### Basic Syntax
+
+```
+--numeric-filter "field:[min,max]"    # Inclusive bounds
+--numeric-filter "field:(min,max)"    # Exclusive bounds
+--numeric-filter "field:[min,max)"    # Mixed bounds
+--numeric-filter "field:[-inf,max]"   # Unbounded lower
+--numeric-filter "field:[min,+inf)"   # Unbounded upper
+```
+
+Multiple filters can be combined - all must match (AND logic).
+
+### Examples
+
+#### Single Numeric Filter
+
+```bash
+# Create index with numeric field
+./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+  "FT.CREATE filtered_idx ON HASH PREFIX 1 vec: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 784 DISTANCE_METRIC L2 score NUMERIC"
+
+# Load vectors with numeric field
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-load \
+  --dataset $DATASET \
+  --search-prefix "vec:" \
+  --search-index filtered_idx \
+  --numeric-field-config "score:int:uniform:0:100" \
+  -n 50000 -c 50
+
+# Query with score filter [50, 100]
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "score:[50,100]" \
+  -k 10 -n 10000 -c 50
+```
+
+#### Exclusive Bounds
+
+```bash
+# Strict greater-than / less-than (excludes boundaries)
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "price:(10,100)" \
+  -k 10 -n 10000 -c 50
+
+# Half-open interval: > 0 and <= 100
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "score:(0,100]" \
+  -k 10 -n 10000 -c 50
+```
+
+#### Unbounded Ranges
+
+```bash
+# All values <= 4.5 (no minimum)
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "rating:[-inf,4.5]" \
+  -k 10 -n 10000 -c 50
+
+# All values >= 100 (no maximum)
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "count:[100,+inf)" \
+  -k 10 -n 10000 -c 50
+```
+
+#### Multiple Numeric Filters
+
+```bash
+# Filter by both price AND rating (AND logic)
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index filtered_idx \
+  --numeric-filter "price:[10,100]" \
+  --numeric-filter "rating:[4.0,5.0]" \
+  -k 10 -n 10000 -c 50
+```
+
+#### Combined with Tag Filters
+
+```bash
+# Create index with tag and numeric fields
+./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+  "FT.CREATE ecomm_idx ON HASH PREFIX 1 prod: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 784 DISTANCE_METRIC L2 category TAG price NUMERIC"
+
+# Load with both tag and numeric
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-load \
+  --dataset $DATASET \
+  --search-prefix "prod:" \
+  --search-index ecomm_idx \
+  --tag-field category \
+  --search-tags "electronics:40,clothing:30,home:30" \
+  --numeric-field-config "price:float:uniform:9.99:199.99:2" \
+  -n 100000 -c 100
+
+# Query: electronics category AND price range
+./target/release/valkey-search-benchmark -h $HOST --cluster \
+  -t vec-query \
+  --dataset $DATASET \
+  --search-index ecomm_idx \
+  --tag-field category \
+  --tag-filter "electronics" \
+  --numeric-filter "price:[20,100]" \
+  -k 10 -n 10000 -c 50
 ```
 
 ---

@@ -250,22 +250,39 @@ fn create_vec_load_template(search_config: &SearchConfig, key_width: usize) -> C
 
 /// Create FT.SEARCH template for vector queries
 ///
-/// If tag_filter is set, the query changes from:
-///   "*=>[KNN $K @embedding $BLOB]"
-/// to:
-///   "@tag_field:{filter}=>[KNN $K @embedding $BLOB]"
+/// Supports both tag filters and numeric filters:
+///   No filters:    "*=>[KNN $K @embedding $BLOB]"
+///   Tag filter:    "@tag_field:{filter}=>[KNN $K @embedding $BLOB]"
+///   Numeric:       "@score:[50 100]=>[KNN $K @embedding $BLOB]"
+///   Combined:      "(@tag_field:{filter} @score:[50 100])=>[KNN $K @embedding $BLOB]"
 fn create_vec_query_template(search_config: &SearchConfig) -> CommandTemplate {
     let mut template = CommandTemplate::new("FT.SEARCH")
         .arg_str("FT.SEARCH")
         .arg_str(&search_config.index_name);
 
-    // Build filter prefix based on tag_filter
-    let filter_prefix = if let (Some(ref tag_field), Some(ref tag_filter)) =
+    // Collect all filter parts
+    let mut filter_parts: Vec<String> = Vec::new();
+
+    // Add tag filter if present
+    if let (Some(ref tag_field), Some(ref tag_filter)) =
         (&search_config.tag_field, &search_config.tag_filter)
     {
-        format!("@{}:{{{}}}", tag_field, tag_filter)
-    } else {
+        filter_parts.push(format!("@{}:{{{}}}", tag_field, tag_filter));
+    }
+
+    // Add numeric filters
+    for filter in &search_config.numeric_filters {
+        filter_parts.push(filter.format_query());
+    }
+
+    // Build filter prefix
+    let filter_prefix = if filter_parts.is_empty() {
         "*".to_string()
+    } else if filter_parts.len() == 1 {
+        filter_parts.into_iter().next().unwrap()
+    } else {
+        // Multiple filters: combine with space inside parentheses
+        format!("({})", filter_parts.join(" "))
     };
 
     // Build query string based on config
@@ -352,6 +369,7 @@ mod tests {
             tag_max_len: 128,
             numeric_field: None,
             numeric_fields: NumericFieldSet::new(),
+            numeric_filters: Vec::new(),
         };
 
         let template = create_template(WorkloadType::VecLoad, "key:", 3, Some(&search_config), false);

@@ -272,6 +272,19 @@ pub struct CliArgs {
     #[arg(long = "numeric-field-config", action = clap::ArgAction::Append)]
     pub numeric_field_configs: Vec<String>,
 
+    /// Numeric filter for vec-query (FT.SEARCH). Can be repeated for multiple filters.
+    ///
+    /// Format: "field:[min,max]" or "field:(min,max)" for exclusive bounds
+    /// Use -inf/+inf for unbounded ranges.
+    ///
+    /// Examples:
+    ///   --numeric-filter "price:[10,100]"      -> @price:[10 100]
+    ///   --numeric-filter "score:(0,100]"       -> @score:[(0 100]
+    ///   --numeric-filter "rating:[-inf,4.5]"   -> @rating:[-inf 4.5]
+    ///   --numeric-filter "count:[100,+inf)"    -> @count:[100 (+inf]
+    #[arg(long = "numeric-filter", action = clap::ArgAction::Append)]
+    pub numeric_filters: Vec<String>,
+
     // ===== Dataset Options =====
     /// Path to binary dataset file
     #[arg(long = "dataset")]

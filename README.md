@@ -252,8 +252,8 @@ Two approaches for guaranteed 100% hit rate:
 | `zadd` | ZADD key score member |
 | `zpopmin` | ZPOPMIN key |
 | `mset` | MSET with 10 key-value pairs |
-| `vec-load` | HSET with vector data (supports --tag-field, --search-tags, --numeric-field) |
-| `vec-query` | FT.SEARCH KNN query (supports --tag-field, --tag-filter for filtered search) |
+| `vec-load` | HSET with vector data (supports --tag-field, --search-tags, --numeric-field-config) |
+| `vec-query` | FT.SEARCH KNN query (supports --tag-filter, --numeric-filter for filtered search) |
 | `vec-delete` | DEL vector keys |
 | `vec-update` | Update existing vector keys (same as vec-load) |
 
@@ -612,7 +612,8 @@ Vector datasets use a binary format with the following structure:
 | `--tag-filter <FILTER>` | Tag filter for vec-query FT.SEARCH | None |
 | `--tag-max-len <N>` | Maximum tag field payload length | `128` |
 | `--numeric-field <NAME>` | Simple numeric field (uses key_num as value) | None |
-| `--numeric-field-config <CFG>` | Extended numeric field (repeatable, see format below) | None |
+| `--numeric-field-config <CFG>` | Extended numeric field for vec-load (repeatable, see format below) | None |
+| `--numeric-filter <FILTER>` | Numeric range filter for vec-query (repeatable, see format below) | None |
 
 #### Tag Distribution Format
 
@@ -656,7 +657,37 @@ This generates FT.SEARCH queries with the filter prefix:
 @tag_field:{electronics|clothing|home}=>[KNN 10 @embedding $BLOB]
 ```
 
-#### Numeric Field Configuration Format
+#### Numeric Filter Format (Query-Side)
+
+The `--numeric-filter` option adds numeric range constraints to vec-query FT.SEARCH queries. Can be repeated for multiple filters (AND logic).
+
+**Format:** `field:[min,max]` or `field:(min,max)` for exclusive bounds
+
+```bash
+# Inclusive range [50, 100]
+--numeric-filter "score:[50,100]"
+
+# Exclusive bounds (50, 100) - excludes 50 and 100
+--numeric-filter "price:(10,100)"
+
+# Mixed bounds: > 0 and <= 100
+--numeric-filter "rating:(0,100]"
+
+# Unbounded ranges
+--numeric-filter "rating:[-inf,4.5]"    # All values <= 4.5
+--numeric-filter "count:[100,+inf)"     # All values >= 100
+
+# Multiple filters (AND logic)
+--numeric-filter "price:[10,100]" --numeric-filter "rating:[4.0,5.0]"
+```
+
+This generates FT.SEARCH queries with numeric filter prefixes:
+```
+@price:[10 100]=>[KNN 10 @embedding $BLOB]
+(@tag:{electronics} @price:[10 100])=>[KNN 10 @embedding $BLOB]
+```
+
+#### Numeric Field Configuration Format (Load-Side)
 
 The `--numeric-field-config` option enables adding numeric fields with various value types and distributions. Can be repeated for multiple fields.
 
@@ -781,6 +812,27 @@ Load vectors with category tags, then run filtered queries:
   --search-prefix "doc:" \
   --tag-field category \
   --tag-filter "electronics|clothing|home" \
+  -k 10 \
+  -t vec-query \
+  -n 10000
+
+# Step 5: Query with numeric filter (requires index with NUMERIC field)
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --search-index myindex \
+  --numeric-filter "price:[10,100]" \
+  -k 10 \
+  -t vec-query \
+  -n 10000
+
+# Step 6: Query with combined tag and numeric filters
+./valkey-search-benchmark -h localhost -p 6379 \
+  --dataset vectors.bin \
+  --search-index myindex \
+  --tag-field category \
+  --tag-filter "electronics" \
+  --numeric-filter "price:[10,100]" \
+  --numeric-filter "rating:[4.0,5.0]" \
   -k 10 \
   -t vec-query \
   -n 10000
