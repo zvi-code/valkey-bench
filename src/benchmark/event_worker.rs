@@ -900,8 +900,21 @@ impl EventWorker {
         key_num: u64,
         _counters: &GlobalCounters,
     ) {
-        // Get the active template (primary for now, will support selection later)
-        let template = self.templates.primary();
+        // Select template: random weighted selection for parallel mode, primary for single
+        let template = if self.templates.is_parallel() {
+            let random = self.rng.f64();
+            let idx = self.templates.select_index(random);
+            let selected = self.templates.get(idx);
+            // Copy selected template bytes into write buffer (different commands have different structures)
+            let buf = &mut self.clients[client_idx].write_buf;
+            if buf.len() != selected.bytes.len() {
+                buf.resize(selected.bytes.len(), 0);
+            }
+            buf.copy_from_slice(&selected.bytes);
+            selected
+        } else {
+            self.templates.primary()
+        };
         for (cmd_idx, phs) in template.placeholders.iter().enumerate() {
             for ph in phs {
                 let offset = template.absolute_offset(cmd_idx, ph.offset);
