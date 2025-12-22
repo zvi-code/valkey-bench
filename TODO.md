@@ -1,137 +1,276 @@
 # TODO: Enhancements and Planned Features
 
-This document tracks planned enhancements and feature ideas for the valkey-search-benchmark project.
-
-## Rust rewrite TODO's
-
-### 1. Make sure optimizer works for all kinds of target goals
-**Status:** Done (need to fix the recall optimization, do dataset will not re-run)
-**Description:** support client+thread optimal point for latency, for qps, for latency&qps. For search workloads
-**Benefits:** 
-
-### 2. Tags support
-**Status:** Done
-**Description:** Import functionality from c code
-**Benefits:** 
-
-### 3. Search-workload: Pin ground truth vectors
-**Status:** Done
-**Description:** Hold a bool map to check if vector is ground truth or not. If it is, do not evict it from memory
-**Benefits:** 
-
-### 4. Support setting TTL/expiry on vectors
-**Status:** Planned
-**Description:** Add ability to set TTL/expiry on inserted vectors.
-**Benefits:** Test scenarios involving data expiration and cache eviction.
-
-### 5. In CLI mode allow interactive choose of node and query node directly
-**Status:** Planned
-**Description:** Allow user to select node to connect to in CLI mode, and allow specifying node for query in cluster mode
-**Benefits:** Easier debugging and testing of specific nodes
-
-### 6. Refactor WorkloadContext to better separate concerns
-**Status:** Planned
-**Description:** Decompose WorkloadContext into separate abstractions for data source, address iterator, and workload execution.
-**Benefits:** Improved modularity and extensibility for different data sources and access patterns
-
-### 7. Address the design in valkey-search-benchmark/docs/field-keyspace-design.md
-**Status:** Planned
-**Description:** Implement support for nested key addressing, field-specific ranges, and more complex data structures
-**Benefits:** More realistic testing scenarios with complex data structures
-
-### 8. Add custom binary format data ingestion support
-**Status:** Planned
-**Description:** Implement data loaders for custom binary formats beyond the existing dataset formats. A custom binary format is associated to a binary-format-layout file that describes how to parse the binary data. The layout file describes the offsets and lengths of vector data, tag data, numeric fields, etc. [The current dataset bin format will become a special case of this with a predefined layout.]
-**Benefits:** Broader applicability and easier integration with various data sources
-
-### 9. Revive the node balanced load
-**Status:** Planned
-**Description:** Re-implement the node balanced load feature from the C benchmark tool to ensure even distribution of workload across cluster nodes.
-**Benefits:** Improved performance and resource utilization in cluster mode
-
-### 10. Add support Tag\Numeric\Text indexes
-**Status:** Planned
-**Description:** Extend the benchmark tool to support indexing and querying of Tag, Numeric, and Text data types.
-**Benefits:** Comprehensive testing capabilities for various data types and index configurations
-
-### 11. Verify node pre-config works [Rust rewrite]
-**Status:** Planned
-**Description:** Ensure that node pre-configuration settings are correctly applied and verified in the Rust implementation of the benchmark tool.
-**Benefits:** Reliable configuration management and consistency across test runs [works in c code]
-
-### 12. Add support for multiple indexes in a single benchmark run
-**Status:** Planned
-**Description:** Implement functionality to benchmark multiple indexes simultaneously within a single test run.
-**Benefits:** Test scenarios involving multiple indexes and their interactions.
-
-### 13. Create sharded index ingestion and query workloads
-**Status:** Planned
-**Description:** Develop workloads that support sharded index ingestion and querying to simulate per-key\slot index that don't require fan-out to all nodes.
-**Benefits:** Test performance and behavior in sharded index environments.
-
-### 14. Dynamic load adjustment during cluster events
-**Status:** Planned
-**Description:** Implement dynamic adjustment of load distribution during cluster events such as node additions or removals.
-**Benefits:** Maintain optimal performance and resource utilization during cluster topology changes.
-
-### 15. Support for mixed workloads and hybrid search
-**Status:** Started
-**Description:** Add support for mixed workloads involving different operation types (e.g., search, insert, delete) in a single benchmark run. This will also support having non-search operations running in the background while search operations are being benchmarked.
-**Benefits:** More realistic testing scenarios that mimic production workloads.
+This document tracks planned enhancements and feature ideas for the valkey-search-benchmark Rust implementation.
 
 ---
 
-## Architecture Evolution - Design Exploration [Rust rewrite]
+## In Progress
 
-This section captures exploratory design directions for evolving the benchmark architecture. These are not immediate tasks but represent a vision for better abstraction layers.
+### Mixed Workloads and Hybrid Search
+**Status:** In Progress
+**Description:** Support for mixed workloads involving different operation types (e.g., search, insert, delete) in a single benchmark run. Background non-search operations while search benchmarks run.
+**Implementation:** `--parallel` and `--composite` CLI flags implemented. Per-workload `WorkloadConfig` foundation complete.
+**Benefits:** More realistic testing scenarios that mimic production workloads.
 
-### Abstraction Dimensions Identified
+### Numeric and Tag Filters
+**Status:** In Progress
+**Description:** Numeric and tag filters for queries, including `--numeric-filter` for query-side filtering and `--numeric-field-config` for load-side field generation.
+**Benefits:** Test filtered search scenarios with realistic data distributions.
+
+### Variable Tag Lengths
+**Status:** In Progress
+**Description:** Support for different tag lengths via `--tag-max-len` and tag distributions.
+**Benefits:** Test impact of metadata size on performance.
+
+### Range-Based Address Specification
+**Status:** In Progress
+**Description:** Allow specifying address ranges not starting from 0 via `--iteration` flag (e.g., `subset:1000:5000`).
+**Benefits:** More flexible data addressing schemes.
+
+### Collect Latency Per-Node
+**Status:** In Progress
+**Description:** Collect and report latency metrics for each individual node in cluster environments (CME and CMD with replicas).
+**Benefits:** Deeper insights into per-node performance variations.
+
+### Dataset Extension
+**Status:** In Progress
+**Description:** Extend dataset by shifting existing dataset by the diameter of current dataset.
+**Note:** Will not work for cosine similarity.
+**Benefits:** Create larger synthetic datasets from existing ones.
+
+### Extended Delete Operations
+**Status:** In Progress
+**Description:** Support deleting by range, by percentage, or by capacity target.
+**Benefits:** More flexible data management scenarios.
+
+### Valkey Logic Encapsulation
+**Status:** In Progress
+**Description:** Encapsulate Valkey-specific logic to prepare for future extensions to other vector databases.
+**Benefits:** Better code organization and easier support for multiple backends.
+
+---
+
+## Planned - Core Features
+
+### Per-Workload Configuration File Support
+**Status:** Planned (Foundation complete)
+**Description:** Extend per-workload configuration to support complex scenarios via external config files (YAML/TOML).
+
+**Current State:**
+- `WorkloadConfig` struct in `src/config/workload_config.rs`
+- ParallelComponent and WorkloadPhase use WorkloadConfig
+- `apply_defaults()` propagates global CLI settings
+- Simple CLI: `--parallel "get:0.8,set:0.2"` and `--composite "vec-load:10000,vec-query:1000"`
+
+**Future Extension:** Add `--workload-config <file>` for complex per-workload configurations:
+```yaml
+type: parallel
+components:
+  - workload: get
+    weight: 0.7
+    key_prefix: "user:"
+    keyspace: 50000
+  - workload: vec-query
+    weight: 0.3
+    dataset: "/path/to/vectors.bin"
+    search_config:
+      index_name: "my_idx"
+      k: 10
+```
+
+**Key Files:** `workload_config.rs`, `cli.rs`, `parallel.rs`, `composite.rs`, `orchestrator.rs`
+**Benefits:** Full per-workload customization, reusable config files.
+
+### Support Multiple Indexes
+**Status:** Planned
+**Description:** Benchmark multiple indexes simultaneously within a single test run.
+**Benefits:** Test scenarios involving multiple indexes and their interactions.
+
+### TTL/Expiry Support
+**Status:** Planned
+**Description:** Set TTL/expiry on inserted vectors and keys.
+**Benefits:** Test data expiration and cache eviction scenarios.
+
+### JSON Data Type Support
+**Status:** Planned
+**Description:** Support search data in JSON data type (HASH is the default).
+**Benefits:** Test JSON-based vector storage patterns.
+
+### JSON Path Addressing
+**Status:** Planned
+**Description:** Extend `AddressConfig` to support JSON path addressing (`$.field.nested`) for JSON data type operations.
+**Note:** Hash field addressing already implemented via `--address-type "hash:prefix:f1,f2,f3"`.
+**Benefits:** Test JSON-based data structures with nested field access.
+
+### Node Balanced Load
+**Status:** Planned
+**Description:** Re-implement node balanced load feature to ensure even distribution of workload across cluster nodes.
+**Note:** Feature existed in C implementation.
+**Benefits:** Improved performance and resource utilization in cluster mode.
+
+### Sharded Index Workloads
+**Status:** Planned
+**Description:** Workloads for sharded index ingestion and querying to simulate per-key/slot indexes without fan-out.
+**Benefits:** Test performance in sharded index environments.
+
+### Dynamic Thread and Client Scaling
+**Status:** Planned
+**Description:** Dynamic adjustment of thread and client count without terminating threads.
+**Benefits:** Eliminate warmup overhead between tests.
+
+---
+
+## Planned - Enhancements
+
+### CLI Node Selection
+**Status:** Planned
+**Description:** In CLI mode, allow interactive selection of node and direct node queries in cluster mode.
+**Benefits:** Easier debugging and testing of specific nodes.
+
+### Index Configuration Verification
+**Status:** Planned
+**Description:** Verify index configuration for existing indexes. Option to clean/recreate if mismatch.
+**Benefits:** Prevents test failures due to configuration mismatches.
+
+### Ground Truth Query Vector Insertion
+**Status:** Planned
+**Description:** Option to insert all ground truth query vectors into the index.
+**Benefits:** More comprehensive testing and validation scenarios.
+
+### Ground Truth Generation via Flat Search
+**Status:** Planned
+**Description:** Generate ground truth using flat search for existing indexes.
+**Benefits:** Create ground truth data without external dependencies.
+
+### Test Stage and Tag Reporting
+**Status:** Planned
+**Description:** Report `test stage` and `test tag` for external profiling tools.
+**Benefits:** Better integration with profiling and monitoring tools.
+
+### Node Pre-Config Verification
+**Status:** Planned
+**Description:** Verify node pre-configuration settings are correctly applied in Rust implementation.
+**Note:** Works in C code, needs verification in Rust.
+**Benefits:** Reliable configuration management.
+
+### Vector Scan Query Verify (vec-scan-q-verify)
+**Status:** Planned
+**Description:** New operation type that performs vector scan queries and verifies results against self. Statistical recall for datasets without ground truth.
+**Benefits:** Quality sanity test without ground truth generation cost.
+
+### Index Name with Parameters
+**Status:** Planned
+**Description:** Embed ef-construction and m settings in index names for easy identification.
+**Benefits:** Simplifies index management with multiple configurations.
+
+### Vector Field Name Deduction
+**Status:** Planned
+**Description:** Automatically deduce vector field name from dataset name during index creation.
+**Benefits:** Reduces configuration errors.
+
+### Vector Load Progress Reporting
+**Status:** Planned
+**Description:** Real-time progress feedback for vector load operations (percentage, ETA, throughput).
+**Benefits:** Better user experience for long-running loads.
+
+### Improved Node Workload Distribution
+**Status:** Planned
+**Description:** Enhanced workload distribution in CME/CMD for balanced resource utilization.
+**Benefits:** Optimizes performance, reduces bottlenecks.
+
+### Out-of-Sync Replica Handling
+**Status:** Planned
+**Description:** Detection and handling of lagging replicas during benchmarks.
+**Benefits:** More accurate results, clearer cluster health insights.
+
+### Graceful Ctrl+C Handling
+**Status:** Planned
+**Description:** Generate partial output when interrupted during load operations.
+**Benefits:** Preserve work done before interruption.
+
+### Dynamic Load During Cluster Events
+**Status:** Planned
+**Description:** Adjust load distribution during node additions/removals.
+**Benefits:** Optimal performance during topology changes.
+
+### Multiple Cluster Support
+**Status:** Planned
+**Description:** Benchmark across multiple Valkey clusters simultaneously.
+**Benefits:** Test distributed scenarios and cluster interactions.
+
+### Custom Binary Format Ingestion
+**Status:** Planned
+**Description:** Data loaders for custom binary formats with layout descriptor files.
+**Benefits:** Broader applicability with various data sources.
+
+### Refactor WorkloadContext
+**Status:** Planned
+**Description:** Decompose into separate abstractions: data source, address iterator, workload execution.
+**Benefits:** Improved modularity and extensibility.
+
+---
+
+## Planned - Wrapper Scripts
+
+### Memory Saturation Testing
+**Status:** Planned
+**Description:** Wrapper for testing with 100% memory utilization.
+**Benefits:** Test behavior under memory pressure and eviction.
+
+### Payload Impact Testing
+**Status:** Planned
+**Description:** Test impact of different payload sizes and types.
+**Benefits:** Understand memory/performance tradeoffs.
+
+---
+
+## Planned - Search Quality Metrics
+
+### Additional Quality Metrics
+**Status:** Planned
+**Description:** Implement ranking-aware metrics beyond simple recall:
+
+**Mean Average Precision (MAP):**
+```
+AP = (1 / N_relevant) * Σ(k=1 to K) P@k * rel(k)
+```
+Rewards correct items appearing early in ranking.
+
+**Normalized Discounted Cumulative Gain (NDCG):**
+```
+DCG@k = Σ(i=1 to k) (2^rel_i - 1) / log₂(i + 1)
+NDCG@k = DCG@k / IDCG@k
+```
+Measures how well-ordered results are.
+
+**Mean Reciprocal Rank (MRR):**
+```
+MRR = (1 / N) * Σ(i=1 to N) (1 / rank_i)
+```
+Measures how soon first relevant item appears.
+
+**Recall@R curves:** Recall at different depth thresholds (10, 100, 1000).
+
+**Benefits:** Industry-standard metrics for comprehensive search quality evaluation.
+
+---
+
+## Architecture Exploration
+
+Design investigations for future evolution. Not immediate tasks.
+
+### Abstraction Dimensions
 
 | Dimension | Current State | Future Direction |
 |-----------|---------------|------------------|
-| Cluster Type | `EngineType` enum (partial) | Explore `Platform` trait for engine-specific differences |
-| Cluster Mode | `ClusterTopology` (Option) | Implicit - present or absent |
-| Topology | `TopologyManager` | Handles refresh, but not shard/replica dynamics |
-| Data | `DataSource`, `VectorDataSource` traits | Good foundation, recently added |
-| Addressable Space | `KeyFormat` | Limited to keys - explore nested addressing |
-| Iterators | Embedded in `WorkloadContext` | Explore `AddressIterator` trait extraction |
-| Workload | `WorkloadType` enum + `WorkloadContext` trait | Single-phase - explore composition |
+| Cluster Type | `EngineType` enum | Full `Platform` trait |
+| Addressable Space | `AddressConfig` (hash fields) | JSON paths, PubSub, multi-DB |
+| Iterators | `IterationStrategy` enum | Composable iterator chains |
+| Workload | `ParallelWorkload`, `CompositeWorkload` | Nested composition |
 
-### 1. Explore AddressIterator Trait Extraction
+### Full Platform Trait
 **Status:** Exploration
-**Description:** Investigate extracting iterator logic from `WorkloadContext` into a dedicated `AddressIterator` trait:
-```rust
-pub trait AddressIterator: Send {
-    fn next(&self, counters: &GlobalCounters) -> Option<Address>;
-    fn reset(&self);
-}
-```
-This would enable advanced scenarios like scan-then-delete workflows.
-**Current:** `claim_next_id()` embedded in WorkloadContext
-**Questions to resolve:**
-- How to handle iterator state across phases?
-- Should iterators be composable?
-
-### 2. Explore Address Space Abstraction
-**Status:** Exploration  
-**Description:** Investigate abstracting addressable space beyond simple keys:
-```rust
-pub trait Address {
-    fn key_bytes(&self) -> &[u8];
-    fn slot(&self) -> Option<u16>;
-    fn field(&self) -> Option<&str>;  // For hash/json fields
-}
-```
-**Current:** `KeyFormat` handles basic key generation
-**Use cases:**
-- Hash field ranges per key
-- JSON path addressing
-- PubSub channel addressing
-- Multi-DB addressing
-
-### 3. Explore Platform/Engine Trait
-**Status:** Exploration
-**Description:** Investigate trait for abstracting engine-specific differences:
+**Description:** Expand `EngineType` into a full trait for engine-specific differences:
 ```rust
 pub trait Platform: Send + Sync {
     fn engine_type(&self) -> EngineType;
@@ -140,12 +279,22 @@ pub trait Platform: Send + Sync {
     fn backfill_metric_name(&self) -> &str;
 }
 ```
-**Current:** Engine differences handled ad-hoc
-**Targets:** Valkey OSS, ElastiCache Valkey, Serverless Valkey, MemoryDB differences
+**Current:** `EngineType` enum with auto-detection implemented.
+**Remaining:** Abstract engine-specific behaviors into trait implementations.
 
-### 4. Explore Recursive Workload Definition
+### Extended Address Spaces
 **Status:** Exploration
-**Description:** Investigate workload composition model:
+**Description:** Extend `AddressConfig` beyond hash fields:
+- JSON path addressing (`$.field.nested`)
+- PubSub channel addressing
+- Multi-DB addressing
+- Stream entry addressing
+
+**Current:** Hash field iteration implemented via `--address-type`.
+
+### Nested Workload Composition
+**Status:** Exploration
+**Description:** Allow workloads to contain other workloads recursively:
 ```rust
 pub enum Phase {
     Configure(ConfigAction),
@@ -153,337 +302,106 @@ pub enum Phase {
     Parallel(Vec<Box<dyn Workload>>),
     Sequence(Vec<Phase>),
 }
-
-pub trait Workload {
-    fn phases(&self) -> Vec<Phase>;
-    fn name(&self) -> &str;
-}
 ```
-**Current:** Single-phase workload execution
-**Vision:** Pre-configure → Prepare → Run([Workload]) → Post → Post-configure
+**Current:** `CompositeWorkload` (sequential) and `ParallelWorkload` (concurrent) implemented. Nested combinations not yet supported.
 
-### 5. Explore Parallel Workload Execution
+### Benchmark vs Wrapper Boundary
 **Status:** Exploration
-**Description:** Investigate running multiple `WorkloadContext` instances concurrently with configurable ratios to simulate realistic mixed workloads.
-**Use cases:**
-- Background writes during search benchmarks
-- Mixed read/write ratios
-- Realistic customer workload simulation
+**Description:** Define clear separation:
 
-### 6. Determine Benchmark vs Wrapper Boundary
-**Status:** Exploration
-**Description:** Define clear separation of concerns:
-
-**Keep in benchmark tool:**
+**Keep in benchmark:**
 - Low-level execution (connections, pipelining, event loop)
 - Single-phase workload execution
-- Metrics collection and aggregation
-- Basic iterators (sequential, random, scan-based)
+- Metrics collection
+- Basic iterators
 
-**Push to wrapper layer:**
+**Push to wrappers:**
 - Multi-phase orchestration
-- Complex application logic simulation
-- Cross-phase data dependencies
-- Realistic mixed workload generation
-
-The benchmark becomes a building block that wrappers compose.
-
----## Loader Enhancements
-
-### 1. Ground Truth Query Vector Insertion
-**Status:** Planned
-**Description:** Add option to insert all ground truth query vectors into the index.  
-**Benefits:** Enables more comprehensive testing and validation scenarios.
-
-### 2. Index Configuration Verification
-**Status:** Planned
-**Description:** Verify index configuration for existing indexes. If the configuration doesn't match what's requested, provide option to clean/recreate the index.  
-**Benefits:** Prevents test failures due to configuration mismatches and ensures consistency.
-
-### 3. Ground Truth Generation via Flat Search
-**Status:** Planned
-**Description:** Generate ground truth vectors using flat search for existing indexes.  
-**Benefits:** Allows creation of ground truth data without external dependencies.
-
-### 4. ~~Runtime Configuration Management~~
-**Status:** ✅ Completed  
-**Description:** Add ability to set server-side configurations before a test is run and restore original configurations afterward.
-**Benefits:** More flexible testing scenarios without manual server configuration changes. Enables automated testing of different server configurations.
-
-### 5. Test Stage and Tag Reporting
-**Status:** Planned
-**Description:** Report `test stage` and `test tag` for external tools to collect profiling data.  
-**Benefits:** Better integration with profiling and monitoring tools; easier correlation of metrics with test phases.
-
-### 6. ~~Persistent Configuration Storage~~
-**Status:** Done  
-**Description:** Save last configuration in a file. If file exists, use the configuration for any argument not provided by the user.  
-**Exclusions:** Should NOT include:
-- `-t` option (the command)
-- `-h` argument (the host)
-
-**Benefits:** Reduces repetitive command-line arguments and improves user experience.
-
-### 7. Expiry Support
-**Status:** Planned
-**Description:** Add ability to set TTL/expiry on inserted vectors.  
-**Benefits:** Test scenarios involving data expiration and cache eviction.
-
-### 8. Numeric and Tag Filters
-**Status:** In Progress
-**Description:** Add ability to set numeric and tag filters for queries.  
-**Benefits:** Test filtered search scenarios and mixed workloads.
-
-### 9. Variable Tag Lengths
-**Status:** In Progress
-**Description:** Add ability to set different tag lengths for testing.  
-**Benefits:** Test impact of metadata size on performance.
-
-### 10. Dynamic Thread and Client Scaling
-**Status:** Planned  
-**Description:** Add dynamic thread and client count adjustment without terminating threads.  
-**Benefits:** Test dynamic scaling scenarios and eliminate warmup overhead between tests.
-
-### 11. Valkey Logic Encapsulation
-**Status:** Started
-**Description:** Encapsulate Valkey-specific logic to prepare for future extensions to other vector databases.  
-**Benefits:** Better code organization and easier support for multiple backends.
-
-### 17. Dataset Extension
-**Status:** Started
-**Description:** Extend dataset by shifting existing dataset by the diameter of current dataset.  
-**Note:** Will not work for cosine similarity.  
-**Benefits:** Create larger synthetic datasets from existing ones.
-
-### 18. JSON Support
-**Status:** Planned  
-**Description:** Add support for search data in JSON data type (HASH is the default).
-**Benefits:** Improved usability and integration with external tools.
-
-## 19. Allow Range based address specification
-**Status:** Started
-**Description:** Allow specifying a range of addresses not starting from 0.  
-**Benefits:** More flexible data addressing schemes.
-
-### 20. Support Multiple Indexes
-**Status:** Planned  
-**Description:** Add support for multiple indexes in a single benchmark run.  
-**Benefits:** Test scenarios involving multiple indexes and their interactions.
-
-### 21. Support nested key addressing
-**Status:** Planned  
-**Description:** Support nested key addressing like fields in hash or json data types. Allow specifying field ranges per key. So you can run random hset load, with varying number of fields in key and length.
-**Benefits:** More realistic testing scenarios with complex data structures.
-
-### 22. Extend support of delete operations
-**Status:** Started
-**Description:** Extend delete operations to support deleting by range, by % or by capacity target.  
-**Benefits:** More flexible data management scenarios.
-
-### 23. Support for mixed workloads + hybrid search
-**Status:** Started
-**Description:** Add support for mixed workloads involving different operation types (e.g., search, insert, delete) in a single benchmark run. This will also support having non-search operations running in the background while search operations are being benchmarked.
-**Benefits:** More realistic testing scenarios that mimic production workloads.
-
-### 24. ~~Evaluate base latency~~
-**Status:** ✅ Completed  
-**Description:** Measure baseline network latency using PING commands at the beginning of a benchmark run. The baseline is measured with 10,000 PING operations using single-threaded, single-client configuration to establish pure network RTT. The baseline latency is displayed separately and included in both console output and CSV exports, showing processing overhead (operation latency - baseline latency).
-**Benefits:** More accurate latency measurements by separating network overhead from operation-specific processing time.
-**Implementation:** Enabled by default (no flags needed). Runs silently before benchmarks. Use `--no-baseline` to disable. Results include avg, p50, p90, p95, p99, and max latencies in both console and CSV output.
-
-### 25. Support multiple clusters
-**Status:** Planned  
-**Description:** Add support for benchmarking across multiple Valkey clusters simultaneously.  
-**Benefits:** Enables testing of distributed scenarios and cluster interactions.
-
-### 26. Collect latency per-node both in CME and when using replicas in CMD
-**Status:** Started
-**Description:** Extend the benchmark tool to collect and report latency metrics for each individual node in a cluster environment, both in Cluster Mode Enabled (CME) and when using replicas in Cluster Mode Disabled (CMD).  
-**Benefits:** Provides deeper insights into performance variations across different nodes, helping identify bottlenecks and optimize cluster configurations.
-
-### 27. Add better handling for out of sync replicas
-**Status:** Planned  
-**Description:** Improve the benchmark tool's handling of out-of-sync replicas by implementing detection mechanisms and appropriate response strategies. This may include skipping lagging replicas during benchmarks or providing detailed reporting on their status.  
-**Benefits:** Ensures more accurate benchmark results by avoiding the influence of lagging replicas and providing clearer insights into cluster health.
-
-### 28. Implement vec-scan-q-verify
-**Status:** Planned
-**Description:** Implement a new operation type `vec-scan-q-verify` that performs vector scan queries and verifies the results against self. This can be used for datasets without ground truth. We can generate "statistical" recall calculations when looking on aggregate queries. How many top-k (k=1) we got out on N queries.
-**Benefits:** Some sanity test of quality, without the cost of ground truth generation.
-
-### 29. Embed ef-construction and m setting in the index name
-**Status:** Planned
-**Description:** Modify the index naming convention to include `ef-construction` and `m` parameters directly in the index name. This will help in easily identifying the configuration of each index based on its name.  
-**Benefits:** Simplifies index management and identification, especially when dealing with multiple indexes with different configurations
-
-### 30. Deduce vector-field-name from the dataset name. 
-**Status:** Planned
-**Description:** Implement a mechanism to automatically deduce the vector field name from the dataset name during index creation. This will streamline the process of setting up indexes by reducing the need for manual configuration.
-**Benefits:** Enhances usability and reduces configuration errors by automating the mapping between datasets and their corresponding vector fields.
-
-### 31. Vector load progress reporting
-**Status:** Planned
-**Description:** Add progress reporting for vector load operations, providing real-time feedback on the status of data loading. This could include percentage completion, estimated time remaining, and current throughput.
-**Benefits:** Improves user experience by keeping users informed about long-running load operations and helps in monitoring performance.
-
-### 32. Improve node workload distribution in CME\CMD
-**Status:** Planned
-**Description:** Enhance the workload distribution mechanism in both Cluster Mode Enabled (CME) and Cluster Mode Disabled (CMD) to ensure more balanced resource utilization across nodes.
-**Benefits:** Optimizes performance and resource usage, reducing the risk of bottlenecks and improving overall system efficiency.
-
-### 33. When Ctrl+c is pressed when running load, generate output for the so far execution
-
-------
-## Search Quality Metrics Enhancements
-### Add additional search results quality metrics
-**Status:** Planned
-**Description:** Implement additional metrics to evaluate the quality of search results beyond simple recall. These metrics provide deeper insights into ranking quality and relevance ordering:
-
-#### 🧮 1. **Mean Average Precision (MAP)**
-
-**Definition:**
-For each query, compute the *average precision* (AP), which takes into account the *rank positions* of the correct items. Then take the mean across queries.
-
-```
-AP = (1 / N_relevant) * Σ(k=1 to K) P@k · rel(k)
-```
-
-where `P@k` is the precision at rank `k`, and `rel(k)` is 1 if the item at rank `k` is relevant.
-
-MAP rewards algorithms that return correct items early in the ranking list — not just within top-k but near the top.
-
-**Use case:** Common in IR (information retrieval) and vector search evaluation when ranking quality matters.
+- Complex application logic
+- Cross-phase dependencies
 
 ---
 
-#### 📈 2. **Normalized Discounted Cumulative Gain (NDCG)**
+## Completed
 
-**Definition:**
-Considers not just binary relevance (hit/miss) but also *graded* relevance (e.g., true rank distance).
+### Iteration Strategies
+**Completed**
+`IterationStrategy` enum with sequential, random, subset, and zipfian patterns. CLI: `--iteration "subset:1000:5000"`.
+**Files:** `src/workload/iteration.rs`
 
-```
-DCG@k = Σ(i=1 to k) (2^rel_i - 1) / log₂(i + 1)
-NDCG@k = DCG@k / IDCG@k
-```
+### Addressable Spaces (Hash Fields)
+**Completed**
+`AddressConfig` for hash field iteration beyond simple keys. CLI: `--address-type "hash:prefix:f1,f2,f3"`.
+**Files:** `src/workload/template_factory.rs`
 
-Here, a relevant item appearing at rank 2 contributes less than at rank 1 due to the logarithmic discount. If your true neighbors are far down (e.g., rank 100,000), their contribution will be near zero.
+### Parallel Workloads
+**Completed**
+`ParallelWorkload` for weighted concurrent traffic. CLI: `--parallel "get:0.8,set:0.2"`.
+**Files:** `src/workload/parallel.rs`
 
-**Use case:** Standard metric in ranking and recommendation systems — measures how *well ordered* your retrieved results are.
+### Composite Workloads
+**Completed**
+`CompositeWorkload` for sequential phases with ID passing. CLI: `--composite "vec-load:10000,vec-query:1000"`.
+**Files:** `src/workload/composite.rs`
 
----
+### Per-Workload Configuration
+**Completed**
+`WorkloadConfig` struct for per-component settings in parallel/composite workloads. Each component can have different key_prefix, keyspace, data_size, search_config.
+**Files:** `src/config/workload_config.rs`, `src/workload/parallel.rs`, `src/workload/composite.rs`
 
-#### 📊 3. **Mean Reciprocal Rank (MRR)**
+### Numeric Filters (Query-Side)
+**Completed**
+`NumericFilter` with inclusive/exclusive bounds for FT.SEARCH queries. CLI: `--numeric-filter "score:[50,100]"`.
+**Files:** `src/config/search_config.rs`, `src/workload/template_factory.rs`
 
-**Definition:**
-Measures how soon the *first* relevant item appears in the ranked list:
+### Optimizer Support
+**Completed**
+Multi-goal optimization for QPS, latency, and recall with constraint support.
 
-```
-MRR = (1 / N) * Σ(i=1 to N) (1 / rank_i)
-```
+### Tags Support
+**Completed**
+Tag field support with distributions for vec-load and tag filters for vec-query.
 
-Useful when you mostly care about whether at least one good match is near the top.
+### Ground Truth Vector Pinning
+**Completed**
+Ground truth vectors are pinned in memory and not evicted.
 
----
+### Runtime Configuration Management
+**Completed**
+Set server-side configurations before tests and restore afterward.
 
-#### 💡 4. **Rank-weighted Recall or Recall@R**
+### Persistent Configuration Storage
+**Completed**
+Save/restore configuration from file. Excludes `-t` and `-h` arguments.
 
-Some papers also compute recall not just for the top-k results, but for *different depth thresholds* (e.g., recall@10, recall@100, recall@1000).
-Plotting this as a curve helps visualize how far the true neighbors are distributed.
+### Base Latency Measurement
+**Completed**
+Measure baseline RTT using PING commands. Enabled by default, disable with `--no-baseline`.
 
-**Benefits:** 
-- More comprehensive evaluation of search quality
-- Ranking-aware metrics (MAP, NDCG, MRR) complement recall
-- Better understanding of result quality at different depth thresholds
-- Industry-standard metrics for comparison with other systems
+### Wrapper Infrastructure
+**Completed**
+Python-based wrapper framework in `bench/wrappers/base_wrapper.py`:
+- `ValKeyBenchmarkWrapper`, `BenchmarkConfig`, `BenchmarkResult` classes
+- `binary_search_max_qps()`, `grid_search()`, `find_max_qps_with_constraints()`
+- Stage signaling for external monitoring
+- See `bench/wrappers/README.md`
 
-**Implementation:** Add these metrics alongside existing recall calculations, with options to enable/disable specific metrics and export results to CSV for analysis.
+### Max QPS at Target Recall
+**Completed**
+`bench/scripts/max_qps_recall.py` - Binary search algorithm for QPS discovery.
 
----
-## Wrapper Scripts Enhancements
+### Max QPS with Recall and Latency Constraints
+**Completed**
+`find_max_qps_with_constraints()` method, `--max-p99-latency` flag.
 
-### 0. ~~Implement infrastructure for wrappers as described in WRAPPERS.md~~
-**Status:** ✅ Completed  
-**Description:** Established the foundational infrastructure to support the development and integration of various wrapper scripts as outlined in WRAPPERS.md.  
+### Optimal Configuration Discovery
+**Completed**
+`grid_search()` method with filtering support.
 
-**Implementation:** Created Python-based wrapper framework following KIS (Keep It Simple) principles:
-- **bench/wrappers/base_wrapper.py**: Single-file core framework (~580 lines) with `ValKeyBenchmarkWrapper`, `BenchmarkConfig`, `BenchmarkResult` classes
-- **Search algorithms**: `binary_search_max_qps()`, `grid_search()`, `find_max_qps_with_constraints()`
-- **Stage signaling**: Simple context manager emits `[STAGE:START/END]` signals to stderr for external monitoring tools
-- **Auto-detection**: Binary location, cluster mode detection
-- **Result parsing**: Console output and CSV export
-- **Example scripts**: `max_qps_recall.py` (Wrapper #1 implementation), `stage-monitor.sh` (external monitoring demo)
-
-**Design Decisions:**
-- Leverage C binary's config persistence, cluster handling, and stage signaling (TODO #5)
-- No separate ConfigManager, ClusterManager, or StageManager modules - kept in base class
-- External tools parse stage signals rather than embedded perf collection
-- All core logic in single file for maintainability
-
-**Benefits:** Clean, maintainable foundation for all future wrapper implementations. Ready for Wrappers #2-6.
-
-**Documentation:** See `bench/wrappers/README.md` for full API reference and usage examples.
-
-### 1. ~~Max QPS at Target Recall~~
-**Status:** ✅ Completed (via infrastructure)  
-**Description:** Add wrapper to find maximum QPS achievable at a specified recall threshold.  
-**Implementation:** `bench/scripts/max_qps_recall.py` - Full CLI tool with binary search algorithm.  
-**Benefits:** Automated performance envelope discovery.
-
-### 2. ~~Max QPS at Recall and Latency Thresholds~~
-**Status:** ✅ Completed (via infrastructure)  
-**Description:** Add wrapper to find maximum QPS while maintaining both recall and latency thresholds.  
-**Implementation:** `ValKeyBenchmarkWrapper.find_max_qps_with_constraints()` method and available in `max_qps_recall.py` via `--max-p99-latency` flag.  
-**Benefits:** More realistic performance testing with SLA constraints.
-
-### 3. ~~Optimal Configuration Discovery~~
-**Status:** ✅ Completed (via infrastructure)  
-**Description:** Add wrapper to find optimal thread and client count configurations.  
-**Implementation:** `ValKeyBenchmarkWrapper.grid_search()` method with filtering support.  
-**Benefits:** Automated tuning for specific hardware and workload combinations.
-
-### 4. ~~Profiling Integration with Test Stages~~
-**Status:** ✅ Completed (via infrastructure)  
-**Description:** Use `test stage` and `test tag` to trigger data collectors while in specific stages and tag the output accordingly.  
-**Implementation:** `bench/scripts/stage-monitor.sh` - External bash script that monitors `[STAGE:START/END]` signals and triggers perf collection during specified stages.  
-**Benefits:** Automated profiling workflow with properly labeled data.
-
-### 5. Memory Saturation Testing
-**Status:** Planned
-**Description:** Wrapper for testing with 100% memory utilization.  
-**Benefits:** Test behavior under memory pressure and eviction scenarios.
-
-### 6. Payload Impact Testing
-**Status:** Planned
-**Description:** Add wrapper to test the impact of different payload sizes and types.  
-**Benefits:** Understand memory and performance tradeoffs with different metadata configurations.
+### Profiling Integration with Test Stages
+**Completed**
+`bench/scripts/stage-monitor.sh` monitors `[STAGE:START/END]` signals.
 
 ---
-
-## Priority Levels (TBD)
-
-Items should be prioritized based on:
-- User demand
-- Implementation complexity
-- Dependencies between features
-- Impact on testing capabilities
-
-## Contributing
-
-When implementing any of these features:
-1. Update this document with implementation status
-2. Add relevant documentation to README.md or ADVANCED.md
-3. Include tests where applicable
-4. Update BENCHMARKING.md if the feature affects benchmarking workflows
-
----
-
-## Commands examples
-```
-/home/ubuntu/valkey-search-benchmark/build-debug/bin/valkey-benchmark -h $HOST --rfr all  --dataset /home/ubuntu/valkey-search-benchmark/datasets/openai-large-5m.bin -t vec-query --search --vector-dim 1536 --search-name openai-large-5m-5M-1536-100 --search-prefix zvec_openai5m: -n 60000 -c 800 --ef-search 256 --nocontent --no-save-config --k 100  --balance-nodes --balance-quota-step 10000 --threads 10 --runtime-config "./16xl-ec2.conf"
-```
-
-```
-/home/ubuntu/valkey-search-benchmark/build-debug/bin/valkey-benchmark -h $HOST --rfr no --dataset /home/ubuntu/valkey-search-benchmark/datasets/openai-large-5m.bin -t vec-load --search --vector-dim 1536 --search-name openai-large-5m-5M-1536-100 --search-prefix zvec_openai5m: -n 5000000 -c 440 --m 16 --ef-construction 256 --nocontent
-```
-
-*Last Updated: October 21, 2025*
+## Example Benchmark Commands 
+see EXAMPLES.md for more details.
