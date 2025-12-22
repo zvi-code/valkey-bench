@@ -44,6 +44,10 @@ pub enum PlaceholderType {
     /// Indexed numeric field with configurable type/distribution
     /// The usize is the index into the NumericFieldSet
     NumericField(usize),
+    /// Hash field name (from AddressableSpace, padded to max length)
+    Field,
+    /// JSON path (from AddressableSpace, padded to max length)
+    JsonPath,
 }
 
 /// Pre-computed command template with placeholder offsets

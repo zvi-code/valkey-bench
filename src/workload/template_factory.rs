@@ -2,12 +2,54 @@
 
 use crate::config::SearchConfig;
 
+use super::addressable::AddressType;
 use super::command_template::CommandTemplate;
 use super::key_format::DEFAULT_KEY_WIDTH;
 use super::workload_type::WorkloadType;
 
+/// Configuration for address-based templates (hash fields, JSON paths)
+#[derive(Debug, Clone)]
+pub struct AddressConfig {
+    /// Type of address space being used
+    pub address_type: AddressType,
+    /// Maximum field name length (for hash fields)
+    pub max_field_len: usize,
+    /// Maximum JSON path length (for JSON paths)
+    pub max_path_len: usize,
+}
+
+impl Default for AddressConfig {
+    fn default() -> Self {
+        Self {
+            address_type: AddressType::Key,
+            max_field_len: 32,
+            max_path_len: 64,
+        }
+    }
+}
+
+impl AddressConfig {
+    /// Create config for hash field addressing
+    pub fn hash_field(max_field_len: usize) -> Self {
+        Self {
+            address_type: AddressType::HashField,
+            max_field_len,
+            max_path_len: 64,
+        }
+    }
+
+    /// Create config for JSON path addressing
+    pub fn json_path(max_path_len: usize) -> Self {
+        Self {
+            address_type: AddressType::JsonPath,
+            max_field_len: 32,
+            max_path_len,
+        }
+    }
+}
+
 /// Create command template for given workload type
-/// 
+///
 /// When `cluster_mode` is true, key-value commands will use cluster-tagged keys
 /// (e.g., `key:{ABC}:000000000001`) to ensure proper routing without MOVED redirects.
 pub fn create_template(
@@ -16,6 +58,21 @@ pub fn create_template(
     data_size: usize,
     search_config: Option<&SearchConfig>,
     cluster_mode: bool,
+) -> CommandTemplate {
+    create_template_with_address(workload, key_prefix, data_size, search_config, cluster_mode, None)
+}
+
+/// Create command template with optional address configuration
+///
+/// This variant allows specifying an AddressConfig to enable hash field or JSON path iteration.
+/// When address_config is provided with HashField type, HSET will use a Field placeholder.
+pub fn create_template_with_address(
+    workload: WorkloadType,
+    key_prefix: &str,
+    data_size: usize,
+    search_config: Option<&SearchConfig>,
+    cluster_mode: bool,
+    address_config: Option<&AddressConfig>,
 ) -> CommandTemplate {
     let key_width = DEFAULT_KEY_WIDTH;
 
@@ -63,9 +120,21 @@ pub fn create_template(
         WorkloadType::Spop => add_key(CommandTemplate::new("SPOP").arg_str("SPOP")),
 
         // === Hash commands ===
-        WorkloadType::Hset => add_key(CommandTemplate::new("HSET").arg_str("HSET"))
-            .arg_str("field")
-            .arg_literal(&vec![b'x'; data_size]),
+        WorkloadType::Hset => {
+            let template = add_key(CommandTemplate::new("HSET").arg_str("HSET"));
+            // Use Field placeholder when address_config specifies hash field iteration
+            if let Some(cfg) = address_config {
+                if cfg.address_type == AddressType::HashField {
+                    return template
+                        .arg_field(cfg.max_field_len)
+                        .arg_literal(&vec![b'x'; data_size]);
+                }
+            }
+            // Default: literal field name
+            template
+                .arg_str("field")
+                .arg_literal(&vec![b'x'; data_size])
+        }
 
         // === Sorted set commands ===
         WorkloadType::Zadd => add_key(CommandTemplate::new("ZADD").arg_str("ZADD"))

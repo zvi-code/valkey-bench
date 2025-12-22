@@ -7,6 +7,7 @@
 //! - Workload-specific ID claiming logic (e.g., skipping existing vectors)
 //! - Workload-specific placeholder filling (e.g., tag generation)
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::benchmark::{GlobalCounters, RecallStats};
@@ -15,8 +16,8 @@ use crate::cluster::{ClusterTagMap, ProtectedVectorIds};
 use crate::dataset::DatasetContext;
 use crate::utils::RespValue;
 use crate::workload::{
-    extract_numeric_ids, parse_search_response, IterationStrategy, NumericFieldSet,
-    TagDistributionSet, WorkloadType,
+    extract_numeric_ids, parse_search_response, Address, AddressType, AddressableSpace,
+    IterationStrategy, NumericFieldSet, TagDistributionSet, WorkloadType,
 };
 
 /// Metrics collected by workload context
@@ -90,6 +91,35 @@ pub trait WorkloadContext: Send {
 
     /// Check if this workload's key is the claimed ID (for delete operations)
     fn key_is_claimed_id(&self) -> bool;
+
+    /// Get the address type for this context
+    fn address_type(&self) -> AddressType {
+        AddressType::Key
+    }
+
+    /// Get the current address (key + optional field/path)
+    /// Default returns None, meaning only simple keys are used.
+    fn current_address(&self) -> Option<&Address> {
+        None
+    }
+
+    /// Fill a Field placeholder with the current field name
+    ///
+    /// Uses the address from AddressableSpace to get field name.
+    /// Buffer is filled with field name or padding (spaces) if no field.
+    fn fill_field_placeholder(&self, buf: &mut [u8]) {
+        // Default: fill with spaces (no-op for workloads without field support)
+        buf.fill(b' ');
+    }
+
+    /// Fill a JsonPath placeholder with the current JSON path
+    ///
+    /// Uses the address from AddressableSpace to get JSON path.
+    /// Buffer is filled with path or padding (spaces) if no path.
+    fn fill_json_path_placeholder(&self, buf: &mut [u8]) {
+        // Default: fill with spaces (no-op for workloads without path support)
+        buf.fill(b' ');
+    }
 }
 
 // =============================================================================
@@ -496,6 +526,145 @@ impl WorkloadContext for VectorUpdateContext {
 
     fn key_is_claimed_id(&self) -> bool {
         false // Key is set by Vector handler
+    }
+}
+
+// =============================================================================
+// AddressableContext - For hash field and JSON path workloads
+// =============================================================================
+
+/// Context for workloads using AddressableSpace (hash fields, JSON paths)
+///
+/// This context iterates over an address space that may include:
+/// - Simple keys (KeySpace)
+/// - Hash keys with multiple fields (HashFieldSpace)
+/// - JSON keys with multiple paths (JsonPathSpace)
+pub struct AddressableContext {
+    space: Box<dyn AddressableSpace>,
+    strategy: IterationStrategy,
+    /// Last claimed address index (for fill methods to reference)
+    last_address_idx: AtomicU64,
+}
+
+impl AddressableContext {
+    /// Create a new AddressableContext with the given address space
+    pub fn new(space: Box<dyn AddressableSpace>, sequential: bool, seed: u64) -> Self {
+        let strategy = if sequential {
+            IterationStrategy::Sequential
+        } else {
+            IterationStrategy::Random { seed }
+        };
+        Self {
+            space,
+            strategy,
+            last_address_idx: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new AddressableContext with custom iteration strategy
+    pub fn with_strategy(space: Box<dyn AddressableSpace>, strategy: IterationStrategy) -> Self {
+        Self {
+            space,
+            strategy,
+            last_address_idx: AtomicU64::new(0),
+        }
+    }
+
+    /// Get the address space
+    pub fn space(&self) -> &dyn AddressableSpace {
+        self.space.as_ref()
+    }
+
+    /// Get address for the given key number
+    /// Called by event worker to get the address components for placeholder filling
+    pub fn address_for_key(&self, key_num: u64) -> Address {
+        self.space.address_at(key_num)
+    }
+}
+
+impl WorkloadContext for AddressableContext {
+    fn claim_next_id(&self, counters: &GlobalCounters) -> Option<u64> {
+        let counter = counters.next_seq_key(u64::MAX);
+        let idx = self.strategy.next_key(counter, self.space.len());
+
+        // Store for later reference by fill methods
+        self.last_address_idx.store(idx, Ordering::Relaxed);
+
+        Some(idx)
+    }
+
+    fn next_dataset_idx(&self, _counters: &GlobalCounters) -> Option<u64> {
+        None
+    }
+
+    fn get_query_bytes(&self, _idx: u64) -> Option<&[u8]> {
+        None
+    }
+
+    fn get_vector_bytes(&self, _idx: u64) -> Option<&[u8]> {
+        None
+    }
+
+    fn compute_and_record_recall(&mut self, _query_idx: u64, _response: &RespValue) {
+        // No-op for addressable workloads
+    }
+
+    fn take_metrics(&mut self) -> WorkloadMetrics {
+        WorkloadMetrics::None
+    }
+
+    fn num_items(&self) -> u64 {
+        self.space.len()
+    }
+
+    fn num_queries(&self) -> u64 {
+        0
+    }
+
+    fn uses_dataset_keys(&self) -> bool {
+        false
+    }
+
+    fn key_is_claimed_id(&self) -> bool {
+        false
+    }
+
+    fn address_type(&self) -> AddressType {
+        self.space.address_type()
+    }
+
+    fn current_address(&self) -> Option<&Address> {
+        // Cannot return reference to computed address
+        // Use fill methods instead which compute on demand
+        None
+    }
+
+    fn fill_field_placeholder(&self, buf: &mut [u8]) {
+        let idx = self.last_address_idx.load(Ordering::Relaxed);
+        let address = self.space.address_at(idx);
+
+        if let Some(ref field) = address.field {
+            let field_bytes = field.as_bytes();
+            let copy_len = field_bytes.len().min(buf.len());
+            buf[..copy_len].copy_from_slice(&field_bytes[..copy_len]);
+            buf[copy_len..].fill(b' ');
+        } else {
+            buf.fill(b' ');
+        }
+    }
+
+    fn fill_json_path_placeholder(&self, buf: &mut [u8]) {
+        let idx = self.last_address_idx.load(Ordering::Relaxed);
+        let address = self.space.address_at(idx);
+
+        if let Some(ref path) = address.path {
+            let path_bytes = path.as_bytes();
+            let copy_len = path_bytes.len().min(buf.len());
+            buf[..copy_len].copy_from_slice(&path_bytes[..copy_len]);
+            buf[copy_len..].fill(b' ');
+        } else {
+            buf.fill(b' ');
+        }
     }
 }
 

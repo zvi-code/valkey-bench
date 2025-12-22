@@ -975,6 +975,16 @@ impl EventWorker {
                         // Use key_num as both key-based seed and seq_counter for now
                         self.workload_ctx.fill_numeric_field(field_idx, key_num, key_num, buf);
                     }
+                    PlaceholderType::Field => {
+                        // Delegate field name filling to workload context (for hash field iteration)
+                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
+                        self.workload_ctx.fill_field_placeholder(buf);
+                    }
+                    PlaceholderType::JsonPath => {
+                        // Delegate JSON path filling to workload context (for JSON path iteration)
+                        let buf = &mut self.clients[client_idx].write_buf[offset..offset + ph.len];
+                        self.workload_ctx.fill_json_path_placeholder(buf);
+                    }
                 }
             }
         }

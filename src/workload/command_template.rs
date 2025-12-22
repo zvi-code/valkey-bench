@@ -146,6 +146,30 @@ impl CommandTemplate {
         self
     }
 
+    /// Add hash field placeholder (variable length, padded with spaces)
+    ///
+    /// Field names are filled from AddressableSpace at runtime.
+    /// The placeholder is padded to max_len with trailing spaces.
+    pub fn arg_field(mut self, max_len: usize) -> Self {
+        self.args.push(TemplateArg::Placeholder {
+            ph_type: PlaceholderType::Field,
+            len: max_len,
+        });
+        self
+    }
+
+    /// Add JSON path placeholder (variable length, padded with spaces)
+    ///
+    /// JSON paths are filled from AddressableSpace at runtime.
+    /// The placeholder is padded to max_len with trailing spaces.
+    pub fn arg_json_path_placeholder(mut self, max_len: usize) -> Self {
+        self.args.push(TemplateArg::Placeholder {
+            ph_type: PlaceholderType::JsonPath,
+            len: max_len,
+        });
+        self
+    }
+
     /// Add prefixed key placeholder (prefix + fixed-width decimal in single arg)
     /// The key will be: prefix + 0-padded decimal number
     pub fn arg_prefixed_key(mut self, prefix: &str, width: usize) -> Self {

@@ -51,6 +51,7 @@ pub struct BenchmarkConfig {
     pub sequential: bool,
     pub iteration: Option<String>,
     pub key_prefix: String,
+    pub address_type: Option<String>,
     pub data_size: usize,
     pub seed: u64,
 
@@ -176,6 +177,7 @@ impl BenchmarkConfig {
             sequential: args.sequential,
             iteration: args.iteration.clone(),
             key_prefix: args.key_prefix.clone(),
+            address_type: args.address_type.clone(),
             data_size: args.data_size,
             seed: args.seed,
 

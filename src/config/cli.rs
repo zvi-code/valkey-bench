@@ -122,6 +122,15 @@ pub struct CliArgs {
     #[arg(long = "key-prefix", default_value = "key:")]
     pub key_prefix: String,
 
+    /// Address type for workload addressing
+    ///
+    /// Formats:
+    /// - "key" or "key:prefix" - Simple keys (default)
+    /// - "hash:prefix:field1,field2,field3" - Hash fields
+    /// - "json:prefix:$.path1,$.path2" - JSON paths
+    #[arg(long = "address-type")]
+    pub address_type: Option<String>,
+
     // ===== Cluster Options =====
     /// Enable cluster mode
     #[arg(long = "cluster")]
