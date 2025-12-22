@@ -1,4 +1,4 @@
-# High-Level Design: valkey-search-benchmark
+# High-Level Design: valkey-bench-rs
 
 **Version:** 2.0
 **Purpose:** Architectural overview of the Rust benchmark tool for Valkey/Redis
@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-`valkey-search-benchmark` is a high-performance benchmarking tool written in Rust, designed for Valkey/Redis with first-class support for vector search operations. The tool features zero external Redis client dependencies, using a custom mio-based event-driven architecture for maximum throughput and minimal latency.
+`valkey-bench-rs` is a high-performance benchmarking tool written in Rust, designed for Valkey/Redis with first-class support for vector search operations. The tool features zero external Redis client dependencies, using a custom mio-based event-driven architecture for maximum throughput and minimal latency.
 
 ### 1.1 Key Design Principles
 
@@ -44,7 +44,7 @@
 
 ```
 +-------------------------------------------------------------------------+
-|                           valkey-search-benchmark                        |
+|                           valkey-bench-rs                        |
 +-------------------------------------------------------------------------+
 |                                                                         |
 |  +-------------------+  +-------------------+  +---------------------+  |
@@ -507,11 +507,11 @@ Features:
 
 Usage:
   # Interactive mode
-  ./valkey-search-benchmark --cli -h host
+  ./valkey-bench-rs --cli -h host
 
   # Single command
-  ./valkey-search-benchmark --cli -h host PING
-  ./valkey-search-benchmark --cli -h host FT.INFO index
+  ./valkey-bench-rs --cli -h host PING
+  ./valkey-bench-rs --cli -h host FT.INFO index
 ```
 
 ---
@@ -644,3 +644,12 @@ src/
     resp.rs                RESP protocol encoder/decoder
     error.rs               Error types (BenchmarkError, ClusterError, ConnectionError)
 ```
+
+---
+
+## 14. See Also
+
+- [README.md](README.md) - User documentation and CLI reference
+- [EXAMPLES.md](EXAMPLES.md) - Comprehensive usage examples
+- [valkey-bench-rs-rust-LLD.md](valkey-bench-rs-rust-LLD.md) - Low-Level Design with implementation details
+- [../CLAUDE.md](../CLAUDE.md) - Developer guide for contributing

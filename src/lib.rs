@@ -1,4 +1,4 @@
-//! valkey-search-benchmark library
+//! valkey-bench-rs library
 //!
 //! High-performance benchmark tool for Valkey with vector search support.
 

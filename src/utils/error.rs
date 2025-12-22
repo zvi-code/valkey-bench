@@ -1,4 +1,4 @@
-//! Error types for valkey-search-benchmark
+//! Error types for valkey-bench-rs
 
 use std::io;
 use thiserror::Error;

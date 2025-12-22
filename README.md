@@ -54,7 +54,7 @@ cargo test
 cargo run --release -- [OPTIONS]
 ```
 
-The release binary will be at `target/release/valkey-search-benchmark`.
+The release binary will be at `target/release/valkey-bench-rs`.
 
 ## Usage
 
@@ -62,16 +62,16 @@ The release binary will be at `target/release/valkey-search-benchmark`.
 
 ```bash
 # Benchmark PING command
-./valkey-search-benchmark -h localhost -p 6379 -t ping
+./valkey-bench-rs -h localhost -p 6379 -t ping
 
 # Benchmark SET/GET with 100 byte values
-./valkey-search-benchmark -h localhost -p 6379 -t set,get -d 100
+./valkey-bench-rs -h localhost -p 6379 -t set,get -d 100
 
 # Cluster mode with auto-discovery
-./valkey-search-benchmark -h node1 --cluster -t ping
+./valkey-bench-rs -h node1 --cluster -t ping
 
 # Read from replicas for higher throughput
-./valkey-search-benchmark -h node1 --cluster --rfr prefer-replica -t get
+./valkey-bench-rs -h node1 --cluster --rfr prefer-replica -t get
 ```
 
 ### CLI Mode (Interactive)
@@ -80,15 +80,15 @@ Use the `--cli` flag to run as an interactive command-line interface:
 
 ```bash
 # Interactive mode
-./valkey-search-benchmark --cli -h localhost -p 6379
+./valkey-bench-rs --cli -h localhost -p 6379
 
 # Non-interactive: execute a single command
-./valkey-search-benchmark --cli -h localhost PING
-./valkey-search-benchmark --cli -h localhost INFO server
-./valkey-search-benchmark --cli -h localhost SCAN 0 COUNT 10
+./valkey-bench-rs --cli -h localhost PING
+./valkey-bench-rs --cli -h localhost INFO server
+./valkey-bench-rs --cli -h localhost SCAN 0 COUNT 10
 
 # With TLS
-./valkey-search-benchmark --cli -h secure-host --tls --tls-skip-verify PING
+./valkey-bench-rs --cli -h secure-host --tls --tls-skip-verify PING
 ```
 
 ### Command Line Options
@@ -196,37 +196,37 @@ Two approaches for guaranteed 100% hit rate:
 **Option 1: Sequential mode**
 ```bash
 # SET 3M keys sequentially
-./valkey-search-benchmark -h HOST -t set -n 3000000 -r 3000000 --sequential
+./valkey-bench-rs -h HOST -t set -n 3000000 -r 3000000 --sequential
 
 # GET the same keys sequentially
-./valkey-search-benchmark -h HOST -t get -n 3000000 -r 3000000 --sequential
+./valkey-bench-rs -h HOST -t get -n 3000000 -r 3000000 --sequential
 ```
 
 **Option 2: Match request counts**
 ```bash
 # SET with 3M requests
-./valkey-search-benchmark -h HOST -t set -n 3000000 -r 3000000 -d 500
+./valkey-bench-rs -h HOST -t set -n 3000000 -r 3000000 -d 500
 
 # GET with same count (first 3M keys match SET exactly)
-./valkey-search-benchmark -h HOST -t get -n 3000000 -r 3000000
+./valkey-bench-rs -h HOST -t get -n 3000000 -r 3000000
 ```
 
 #### Benchmark Examples for Maximum Throughput
 
 ```bash
 # Step 1: Clear the database
-./valkey-search-benchmark --cli -h HOST FLUSHALL
+./valkey-bench-rs --cli -h HOST FLUSHALL
 
 # Step 2: SET 3M keys with 500 byte values
-./valkey-search-benchmark -h HOST --cluster --rfr no -t set \
+./valkey-bench-rs -h HOST --cluster --rfr no -t set \
   -n 3000000 -r 3000000 -d 500 -c 200 --threads 16 -P 100
 
 # Step 3: GET the same 3M keys (100% hit rate guaranteed)
-./valkey-search-benchmark -h HOST --cluster --rfr no -t get \
+./valkey-bench-rs -h HOST --cluster --rfr no -t get \
   -n 3000000 -r 3000000 -c 200 --threads 16 -P 100
 
 # Alternative: More GET requests (will show 85% hit rate due to collisions)
-./valkey-search-benchmark -h HOST --cluster --rfr no -t get \
+./valkey-bench-rs -h HOST --cluster --rfr no -t get \
   -n 5000000 -r 3000000 -c 200 --threads 16 -P 100
 ```
 
@@ -263,42 +263,42 @@ Two approaches for guaranteed 100% hit rate:
 
 ```bash
 # Simple PING test
-./valkey-search-benchmark -h localhost -p 6379 -t ping -n 100000
+./valkey-bench-rs -h localhost -p 6379 -t ping -n 100000
 
 # SET/GET with 100 clients, pipeline of 10
-./valkey-search-benchmark -h localhost -p 6379 -t set,get -c 100 -P 10 -n 1000000
+./valkey-bench-rs -h localhost -p 6379 -t set,get -c 100 -P 10 -n 1000000
 
 # Rate-limited test at 10,000 requests/sec
-./valkey-search-benchmark -h localhost -p 6379 -t set --rps 10000 -n 100000
+./valkey-bench-rs -h localhost -p 6379 -t set --rps 10000 -n 100000
 
 # Sequential keys for cache warming
-./valkey-search-benchmark -h localhost -p 6379 -t set --sequential -r 1000000 -n 1000000
+./valkey-bench-rs -h localhost -p 6379 -t set --sequential -r 1000000 -n 1000000
 ```
 
 #### Cluster Mode
 
 ```bash
 # Enable cluster mode
-./valkey-search-benchmark -h cluster-node --cluster -t ping
+./valkey-bench-rs -h cluster-node --cluster -t ping
 
 # Read from replicas for higher read throughput
-./valkey-search-benchmark -h cluster-node --cluster --rfr prefer-replica -t get -n 1000000
+./valkey-bench-rs -h cluster-node --cluster --rfr prefer-replica -t get -n 1000000
 
 # Round-robin across all nodes (primary + replicas)
-./valkey-search-benchmark -h cluster-node --cluster --rfr round-robin -t get
+./valkey-bench-rs -h cluster-node --cluster --rfr round-robin -t get
 ```
 
 #### TLS Connection
 
 ```bash
 # TLS with certificate verification disabled (for testing)
-./valkey-search-benchmark -h secure-host --tls --tls-skip-verify -t ping
+./valkey-bench-rs -h secure-host --tls --tls-skip-verify -t ping
 
 # TLS with CA certificate
-./valkey-search-benchmark -h secure-host --tls --tls-ca-cert ca.crt -t ping
+./valkey-bench-rs -h secure-host --tls --tls-ca-cert ca.crt -t ping
 
 # TLS with client certificate authentication
-./valkey-search-benchmark -h secure-host --tls \
+./valkey-bench-rs -h secure-host --tls \
   --tls-cert client.crt --tls-key client.key --tls-ca-cert ca.crt -t ping
 ```
 
@@ -306,10 +306,10 @@ Two approaches for guaranteed 100% hit rate:
 
 ```bash
 # Password authentication
-./valkey-search-benchmark -h localhost -p 6379 -a mypassword -t ping
+./valkey-bench-rs -h localhost -p 6379 -a mypassword -t ping
 
 # ACL authentication (username + password)
-./valkey-search-benchmark -h localhost -p 6379 --user myuser -a mypassword -t ping
+./valkey-bench-rs -h localhost -p 6379 --user myuser -a mypassword -t ping
 ```
 
 #### Console Output
@@ -317,7 +317,7 @@ Two approaches for guaranteed 100% hit rate:
 The benchmark displays a compact summary with base network latency and results:
 
 ```
-valkey-search-benchmark v0.1.0
+valkey-bench-rs v0.1.0
 ============================================================
 Connection: localhost:6379 | cluster(rfr=No)
 Base RTT: PING avg=0.12ms p99=0.18ms | GET-miss avg=0.15ms p99=0.22ms
@@ -345,7 +345,7 @@ This establishes a network baseline that helps normalize results across differen
 
 ```bash
 # Export results to JSON file
-./valkey-search-benchmark -h localhost -p 6379 -t ping,set,get -o results.json --output-format json
+./valkey-bench-rs -h localhost -p 6379 -t ping,set,get -o results.json --output-format json
 ```
 
 Output format:
@@ -383,7 +383,7 @@ The `--cli` flag enables an interactive command-line interface similar to `valke
 ### Interactive Mode
 
 ```bash
-./valkey-search-benchmark --cli -h localhost
+./valkey-bench-rs --cli -h localhost
 
 # Output:
 # Connecting to localhost:6379...
@@ -405,32 +405,32 @@ Execute commands directly by appending them after the connection options:
 
 ```bash
 # Simple commands
-./valkey-search-benchmark --cli -h localhost PING
-./valkey-search-benchmark --cli -h localhost INFO server
-./valkey-search-benchmark --cli -h localhost DBSIZE
+./valkey-bench-rs --cli -h localhost PING
+./valkey-bench-rs --cli -h localhost INFO server
+./valkey-bench-rs --cli -h localhost DBSIZE
 
 # Commands with arguments
-./valkey-search-benchmark --cli -h localhost SET foo bar
-./valkey-search-benchmark --cli -h localhost GET foo
-./valkey-search-benchmark --cli -h localhost SCAN 0 COUNT 10
+./valkey-bench-rs --cli -h localhost SET foo bar
+./valkey-bench-rs --cli -h localhost GET foo
+./valkey-bench-rs --cli -h localhost SCAN 0 COUNT 10
 
 # Cluster commands
-./valkey-search-benchmark --cli -h cluster-node CLUSTER INFO
-./valkey-search-benchmark --cli -h cluster-node CLUSTER NODES
+./valkey-bench-rs --cli -h cluster-node CLUSTER INFO
+./valkey-bench-rs --cli -h cluster-node CLUSTER NODES
 
 # Vector search commands
-./valkey-search-benchmark --cli -h localhost FT._LIST
-./valkey-search-benchmark --cli -h localhost FT.INFO idx
+./valkey-bench-rs --cli -h localhost FT._LIST
+./valkey-bench-rs --cli -h localhost FT.INFO idx
 ```
 
 ### CLI with TLS and Auth
 
 ```bash
 # TLS connection
-./valkey-search-benchmark --cli -h secure-host --tls --tls-skip-verify PING
+./valkey-bench-rs --cli -h secure-host --tls --tls-skip-verify PING
 
 # With authentication
-./valkey-search-benchmark --cli -h localhost -a mypassword INFO server
+./valkey-bench-rs --cli -h localhost -a mypassword INFO server
 ```
 
 ## Parameter Optimization
@@ -488,33 +488,33 @@ The optimizer uses a three-phase approach:
 
 ```bash
 # Maximize QPS for GET workload, tune clients and threads
-./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+./valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps" \
   --tune "clients:10:300:10" --tune "threads:1:32:1"
 
 # Maximize QPS with p99 latency under 1ms
-./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+./valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps" --constraint "p99_ms:lt:1.0" \
   --tune "clients:10:200:10" --tune "threads:1:16:1"
 
 # Multi-objective: maximize QPS, tiebreak on lowest p99 (4% tolerance)
-./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+./valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps,minimize:p99_ms" --tolerance 0.04 \
   --tune "clients:10:300:10" --tune "threads:1:32:1"
 
 # Vector search: maximize QPS with recall above 95%
-./valkey-search-benchmark -h cluster-node --cluster -t vec-query \
+./valkey-bench-rs -h cluster-node --cluster -t vec-query \
   --dataset vectors.bin --search-index idx -n 100000 \
   --optimize --objective "maximize:qps" --constraint "recall:gt:0.95" \
   --tune "ef_search:10:500:10" --tune "clients:10:100:10"
 
 # Bounded objective: maximize QPS but must stay under 1M req/s
-./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+./valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps:lt:1000000" \
   --tune "clients:10:200:10"
 
 # Minimize p99 latency while maintaining minimum throughput
-./valkey-search-benchmark -h cluster-node --cluster -t get -n 100000 \
+./valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
   --optimize --objective "minimize:p99_ms" --constraint "qps:gte:500000" \
   --tune "clients:10:200:10" --tune "pipeline:1:20:1"
 ```
@@ -556,7 +556,7 @@ qps: 1041234.5600
 
 === Recommended Command Line ===
 
-./valkey-search-benchmark -h cluster-node --cluster -t get -c 275 --threads 24 -n 1000000
+./valkey-bench-rs -h cluster-node --cluster -t get -c 275 --threads 24 -n 1000000
 
 Expected performance: 1.04M req/sec, p99=0.41ms
 ```
@@ -736,7 +736,7 @@ The `--numeric-field-config` option enables adding numeric fields with various v
 --numeric-field-config "version:int:constant:1"
 
 # Multiple fields in one command
-./valkey-search-benchmark -h HOST --cluster -t vec-load \
+./valkey-bench-rs -h HOST --cluster -t vec-load \
   --dataset vectors.bin --search-prefix "vec:" --search-index idx \
   --tag-field category --search-tags "electronics:40,clothing:30,books:30" \
   --numeric-field-config "price:float:uniform:0.99:999.99:2" \
@@ -750,7 +750,7 @@ The `--numeric-field-config` option enables adding numeric fields with various v
 
 ```bash
 # Load vectors into database
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -758,7 +758,7 @@ The `--numeric-field-config` option enables adding numeric fields with various v
   -n 100000
 
 # Run vector search queries with recall computation
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -775,7 +775,7 @@ Load vectors with category tags, then run filtered queries:
 
 ```bash
 # Step 1: Create index with TAG field
-./valkey-search-benchmark --cli -h localhost \
+./valkey-bench-rs --cli -h localhost \
   "FT.CREATE myindex ON HASH PREFIX 1 doc: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 128 DISTANCE_METRIC L2 category TAG"
 
 # Step 2: Load vectors with tag distribution
@@ -785,7 +785,7 @@ Load vectors with category tags, then run filtered queries:
 # - 20% get "home"
 # - 15% get "sports"
 # - 10% get "other"
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -795,7 +795,7 @@ Load vectors with category tags, then run filtered queries:
   -n 100000
 
 # Step 3: Query with single tag filter
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -806,7 +806,7 @@ Load vectors with category tags, then run filtered queries:
   -n 10000
 
 # Step 4: Query with multiple tag filter (OR condition)
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -817,7 +817,7 @@ Load vectors with category tags, then run filtered queries:
   -n 10000
 
 # Step 5: Query with numeric filter (requires index with NUMERIC field)
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --numeric-filter "price:[10,100]" \
@@ -826,7 +826,7 @@ Load vectors with category tags, then run filtered queries:
   -n 10000
 
 # Step 6: Query with combined tag and numeric filters
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --tag-field category \
@@ -844,7 +844,7 @@ For scenarios with many unique tag values:
 
 ```bash
 # Load vectors with random category IDs (high cardinality)
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -860,7 +860,7 @@ Add numeric fields with configurable distributions. The benchmark automatically 
 
 ```bash
 # Load vectors with tag and numeric fields (index created automatically)
-./valkey-search-benchmark -h localhost -p 6379 \
+./valkey-bench-rs -h localhost -p 6379 \
   --dataset vectors.bin \
   --search-index myindex \
   --search-prefix "doc:" \
@@ -872,8 +872,8 @@ Add numeric fields with configurable distributions. The benchmark automatically 
   -n 100000
 
 # Verify data was loaded correctly
-./valkey-search-benchmark --cli -h localhost KEYS "doc:*" | head -3
-./valkey-search-benchmark --cli -h localhost HMGET doc:{ABC}:000000000001 category price rating
+./valkey-bench-rs --cli -h localhost KEYS "doc:*" | head -3
+./valkey-bench-rs --cli -h localhost HMGET doc:{ABC}:000000000001 category price rating
 ```
 
 **Complete Example with E-commerce Data:**
@@ -888,7 +888,7 @@ Add numeric fields with configurable distributions. The benchmark automatically 
 #
 # The benchmark automatically creates the index with vector, tag, and numeric fields
 
-./valkey-search-benchmark -h localhost --cluster -t vec-load \
+./valkey-bench-rs -h localhost --cluster -t vec-load \
   --dataset products.bin \
   --search-prefix "product:" \
   --search-index product_idx \
@@ -902,7 +902,7 @@ Add numeric fields with configurable distributions. The benchmark automatically 
   -n 100000 -c 50 --threads 4
 
 # Use --cleanup to drop existing index after benchmark
-./valkey-search-benchmark -h localhost --cluster -t vec-load \
+./valkey-bench-rs -h localhost --cluster -t vec-load \
   --dataset products.bin \
   --search-index product_idx \
   --cleanup \
@@ -955,7 +955,7 @@ Add numeric fields with configurable distributions. The benchmark automatically 
 
 ## Comparison with redis-benchmark
 
-| Feature | valkey-search-benchmark | redis-benchmark |
+| Feature | valkey-bench-rs | redis-benchmark |
 |---------|------------------------|-----------------|
 | Vector search | Yes | No |
 | Recall computation | Yes | No |
@@ -973,13 +973,13 @@ Add numeric fields with configurable distributions. The benchmark automatically 
 
 ```bash
 # Test basic connectivity with CLI mode
-./valkey-search-benchmark --cli -h localhost PING
+./valkey-bench-rs --cli -h localhost PING
 
 # Test benchmark mode
-./valkey-search-benchmark -h localhost -p 6379 -t ping -n 1
+./valkey-bench-rs -h localhost -p 6379 -t ping -n 1
 
 # Enable debug logging
-RUST_LOG=debug ./valkey-search-benchmark -h localhost -p 6379 -t ping
+RUST_LOG=debug ./valkey-bench-rs -h localhost -p 6379 -t ping
 ```
 
 ### Cluster Issues

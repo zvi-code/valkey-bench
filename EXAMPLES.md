@@ -34,17 +34,17 @@ export DATASET="/path/to/your/vectors.bin"
 
 ```bash
 # Build the benchmark tool
-cd valkey-search-benchmark
+cd valkey-bench-rs
 cargo build --release
 
 # Basic connectivity test
-./target/release/valkey-search-benchmark -h $HOST -t ping -n 10000
+./target/release/valkey-bench-rs -h $HOST -t ping -n 10000
 
 # Cluster mode with auto-discovery
-./target/release/valkey-search-benchmark -h $HOST --cluster -t ping
+./target/release/valkey-bench-rs -h $HOST --cluster -t ping
 
 # Interactive CLI mode
-./target/release/valkey-search-benchmark --cli -h $HOST
+./target/release/valkey-bench-rs --cli -h $HOST
 ```
 
 ---
@@ -67,17 +67,17 @@ Weights are normalized automatically - they don't need to sum to 1.0.
 
 ```bash
 # 80% reads, 20% writes
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:80,set:20" \
   -n 1000000 -r 1000000 -c 100 --threads 8
 
 # Equal read/write split
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:50,set:50" \
   -n 500000 -r 100000 -c 50
 
 # Read-heavy with occasional writes (95/5)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:95,set:5" \
   -n 2000000 -r 500000 -c 200 --threads 16
 ```
@@ -86,17 +86,17 @@ Weights are normalized automatically - they don't need to sum to 1.0.
 
 ```bash
 # GET, SET, and INCR mixed traffic
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:60,set:25,incr:15" \
   -n 1000000 -r 100000 -c 100
 
 # List operations mix
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "lpush:40,rpush:30,lpop:15,rpop:15" \
   -n 500000 -r 10000 -c 50
 
 # Hash and sorted set mix
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "hset:50,zadd:30,sadd:20" \
   -n 500000 -r 50000 -c 100 -d 64
 ```
@@ -105,12 +105,12 @@ Weights are normalized automatically - they don't need to sum to 1.0.
 
 ```bash
 # Write-heavy (for replication testing)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "set:90,get:10" \
   -n 1000000 -r 1000000 -d 512 -c 100
 
 # Read-only with ping (connection testing)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:80,ping:20" \
   -n 1000000 -r 100000 -c 50
 ```
@@ -119,7 +119,7 @@ Weights are normalized automatically - they don't need to sum to 1.0.
 
 ```bash
 # Mixed traffic at 50,000 requests per second
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:70,set:30" \
   --rps 50000 -n 500000 -r 100000 -c 100
 ```
@@ -144,7 +144,7 @@ Each phase runs to completion before the next begins.
 
 ```bash
 # Load 10,000 vectors, then run 1,000 queries
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --composite "vec-load:10000,vec-query:1000" \
   --dataset $DATASET \
   --search-index mnist_idx \
@@ -156,7 +156,7 @@ Each phase runs to completion before the next begins.
 
 ```bash
 # SET 100K keys as warmup, then measure GET performance
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --composite "set:100000,get:1000000" \
   -r 100000 -d 100 -c 100 --threads 8
 ```
@@ -165,7 +165,7 @@ Each phase runs to completion before the next begins.
 
 ```bash
 # Load -> Query -> Update -> Query (measure impact of updates)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --composite "vec-load:50000,vec-query:5000,vec-update:10000,vec-query:5000" \
   --dataset $DATASET \
   --search-index sift_idx \
@@ -177,7 +177,7 @@ Each phase runs to completion before the next begins.
 
 ```bash
 # Create keys, read them
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --composite "set:50000,get:100000" \
   -r 50000 -d 256 -c 50
 ```
@@ -209,13 +209,13 @@ The `--iteration` flag controls how keys are generated and accessed across the k
 
 ```bash
 # Sequential keys for cache warming (100% unique keys)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t set -n 1000000 -r 1000000 \
   --iteration "sequential" \
   -c 100 --threads 8
 
 # Shorthand
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 1000000 \
   --iteration "seq"
 ```
@@ -224,12 +224,12 @@ The `--iteration` flag controls how keys are generated and accessed across the k
 
 ```bash
 # Random keys with default seed (12345)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 1000000 \
   --iteration "random"
 
 # Random with specific seed for reproducibility
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 1000000 \
   --iteration "random:42"
 ```
@@ -238,19 +238,19 @@ The `--iteration` flag controls how keys are generated and accessed across the k
 
 ```bash
 # Only access keys 1000-5999 (partial keyspace)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 100000 -r 10000 \
   --iteration "subset:1000:6000" \
   -c 50
 
 # Access first 10% of keyspace
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 500000 -r 1000000 \
   --iteration "subset:0:100000" \
   -c 100
 
 # Access last 20% of keyspace
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 200000 -r 1000000 \
   --iteration "subset:800000:1000000"
 ```
@@ -259,25 +259,25 @@ The `--iteration` flag controls how keys are generated and accessed across the k
 
 ```bash
 # Light skew (skew=0.5) - some keys accessed more than others
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 100000 \
   --iteration "zipfian:0.5" \
   -c 100
 
 # Medium skew (skew=1.0) - moderate hot-spot pattern
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 100000 \
   --iteration "zipfian:1.0" \
   -c 100
 
 # Heavy skew (skew=1.5) - few keys get most traffic
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 100000 \
   --iteration "zipfian:1.5" \
   -c 100
 
 # Zipfian with specific seed
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 100000 \
   --iteration "zipfian:1.0:99999"
 ```
@@ -286,17 +286,17 @@ The `--iteration` flag controls how keys are generated and accessed across the k
 
 ```bash
 # Zipfian access pattern with rate limiting
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 500000 -r 50000 \
   --iteration "zipfian:1.2" \
   --rps 100000 -c 100
 
 # Sequential SET then random GET
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t set -n 100000 -r 100000 \
   --iteration "sequential" -c 100
 
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 500000 -r 100000 \
   --iteration "random" -c 100
 ```
@@ -327,7 +327,7 @@ The `--address-type` flag enables benchmarking operations across hash fields or 
 
 ```bash
 # HSET across 3 fields per key
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "hash:user:name,email,age" \
   -n 30000 -r 10000 -d 64 -c 50
@@ -336,7 +336,7 @@ The `--address-type` flag enables benchmarking operations across hash fields or 
 # Verify: HLEN user{ABC}:000000000001 = 3
 
 # Hash with more fields for wide objects
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "hash:product:id,name,price,category,stock,rating,created,updated" \
   -n 80000 -r 10000 -d 32 -c 100
@@ -344,7 +344,7 @@ The `--address-type` flag enables benchmarking operations across hash fields or 
 # Result: 10,000 keys with 8 fields each
 
 # Hash field iteration with custom prefix
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "hash:session:user_id,token,expires,data" \
   -n 40000 -r 10000 -d 128 -c 50
@@ -354,13 +354,13 @@ The `--address-type` flag enables benchmarking operations across hash fields or 
 
 ```bash
 # JSON.SET across multiple paths
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "json:doc:$.name,$.email,$.profile.bio" \
   -n 30000 -r 10000 -d 100 -c 50
 
 # Nested JSON paths
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "json:event:$.type,$.data.user_id,$.data.timestamp,$.metadata.source" \
   -n 40000 -r 10000 -d 64 -c 50
@@ -370,14 +370,14 @@ The `--address-type` flag enables benchmarking operations across hash fields or 
 
 ```bash
 # Sequential hash field population
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "hash:obj:f1,f2,f3,f4,f5" \
   --iteration "sequential" \
   -n 50000 -r 10000 -d 64 -c 50
 
 # Zipfian access to specific fields (hot fields)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t hset \
   --address-type "hash:cache:hits,misses,size,ttl" \
   --iteration "zipfian:1.0" \
@@ -423,7 +423,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
 
 ```bash
 # Products with price, quantity, rating
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "product:" \
@@ -438,7 +438,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
 
 ```bash
 # Events with timestamps
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "event:" \
@@ -449,7 +449,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
   -n 50000 -c 100
 
 # With ISO datetime
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "log:" \
@@ -463,7 +463,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
 
 ```bash
 # Documents with auto-incrementing IDs
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "doc:" \
@@ -477,7 +477,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
 
 ```bash
 # Transactions with amounts and timestamps
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "txn:" \
@@ -492,7 +492,7 @@ The `--numeric-field-config` flag enables adding numeric fields with configurabl
 
 ```bash
 # IoT sensor readings
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "sensor:" \
@@ -516,7 +516,7 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
 
 ```bash
 # Load vectors with category tags
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "prod:" \
@@ -526,7 +526,7 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
   -n 50000 -c 50
 
 # Query only electronics
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index prod_idx \
@@ -539,7 +539,7 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
 
 ```bash
 # Mixed categories
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "prod:" \
@@ -549,7 +549,7 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
   -n 100000 -c 100
 
 # Query multiple categories (OR)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index prod_idx \
@@ -562,7 +562,7 @@ Use `--tag-field`, `--search-tags`, and `--tag-filter` for tag-based vector filt
 
 ```bash
 # Full e-commerce setup
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "prod:" \
@@ -598,11 +598,11 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Create index with numeric field
-./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+./target/release/valkey-bench-rs --cli -h $HOST --cluster \
   "FT.CREATE filtered_idx ON HASH PREFIX 1 vec: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 784 DISTANCE_METRIC L2 score NUMERIC"
 
 # Load vectors with numeric field
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "vec:" \
@@ -611,7 +611,7 @@ Multiple filters can be combined - all must match (AND logic).
   -n 50000 -c 50
 
 # Query with score filter [50, 100]
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -623,7 +623,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Strict greater-than / less-than (excludes boundaries)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -631,7 +631,7 @@ Multiple filters can be combined - all must match (AND logic).
   -k 10 -n 10000 -c 50
 
 # Half-open interval: > 0 and <= 100
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -643,7 +643,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # All values <= 4.5 (no minimum)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -651,7 +651,7 @@ Multiple filters can be combined - all must match (AND logic).
   -k 10 -n 10000 -c 50
 
 # All values >= 100 (no maximum)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -663,7 +663,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Filter by both price AND rating (AND logic)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index filtered_idx \
@@ -676,11 +676,11 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Create index with tag and numeric fields
-./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+./target/release/valkey-bench-rs --cli -h $HOST --cluster \
   "FT.CREATE ecomm_idx ON HASH PREFIX 1 prod: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 784 DISTANCE_METRIC L2 category TAG price NUMERIC"
 
 # Load with both tag and numeric
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "prod:" \
@@ -691,7 +691,7 @@ Multiple filters can be combined - all must match (AND logic).
   -n 100000 -c 100
 
 # Query: electronics category AND price range
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index ecomm_idx \
@@ -709,11 +709,11 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Step 1: Create index via CLI
-./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+./target/release/valkey-bench-rs --cli -h $HOST --cluster \
   "FT.CREATE test_idx ON HASH PREFIX 1 vec: SCHEMA embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 784 DISTANCE_METRIC L2"
 
 # Step 2: Load vectors
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "vec:" \
@@ -721,7 +721,7 @@ Multiple filters can be combined - all must match (AND logic).
   -n 60000 -c 100 --threads 8
 
 # Step 3: Run queries with recall measurement
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index test_idx \
@@ -729,7 +729,7 @@ Multiple filters can be combined - all must match (AND logic).
   -k 10 -n 10000 -c 50 --threads 4
 
 # Step 4: Cleanup (optional)
-./target/release/valkey-search-benchmark --cli -h $HOST --cluster \
+./target/release/valkey-bench-rs --cli -h $HOST --cluster \
   "FT.DROPINDEX test_idx"
 ```
 
@@ -737,7 +737,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # High recall configuration
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index idx \
@@ -746,7 +746,7 @@ Multiple filters can be combined - all must match (AND logic).
   -k 100 -n 5000 -c 20
 
 # Fast search (lower recall)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index idx \
@@ -758,7 +758,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Load vectors with ground truth protection for recall testing
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-load \
   --dataset $DATASET \
   --search-prefix "vec:" \
@@ -766,14 +766,14 @@ Multiple filters can be combined - all must match (AND logic).
   -n 60000 -c 100
 
 # Delete some vectors (ground truth neighbors are protected)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-delete \
   --dataset $DATASET \
   --search-prefix "vec:" \
   -n 10000 -c 50
 
 # Query and verify recall is still valid
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index test_idx \
@@ -787,7 +787,7 @@ Multiple filters can be combined - all must match (AND logic).
 ### Optimize GET Throughput
 
 ```bash
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 100000 -r 1000000 \
   --optimize \
   --objective "maximize:qps" \
@@ -798,7 +798,7 @@ Multiple filters can be combined - all must match (AND logic).
 ### Multi-Objective: QPS with Latency Bound
 
 ```bash
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 100000 -r 1000000 \
   --optimize \
   --objective "maximize:qps,minimize:p99_ms" \
@@ -810,7 +810,7 @@ Multiple filters can be combined - all must match (AND logic).
 ### Vector Search: Recall vs Throughput
 
 ```bash
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t vec-query \
   --dataset $DATASET \
   --search-index idx \
@@ -830,13 +830,13 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Prefill 3M keys with 500B values
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t set -n 3000000 -r 3000000 -d 500 \
   --iteration "sequential" \
   -c 200 --threads 16 -P 100
 
 # Maximum GET (target: ~1M req/s on 16xlarge node cluster)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 3000000 -r 3000000 \
   -c 275 --threads 24 -P 100
 ```
@@ -845,7 +845,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Duration-based mixed traffic (run for 5 minutes)
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:80,set:20" \
   --duration 300 \
   -r 1000000 -d 128 \
@@ -856,7 +856,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Zipfian GET with rate limit
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 1000000 -r 100000 \
   --iteration "zipfian:1.5" \
   --rps 50000 \
@@ -867,7 +867,7 @@ Multiple filters can be combined - all must match (AND logic).
 
 ```bash
 # Parallel traffic on specific key range
-./target/release/valkey-search-benchmark -h $HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --parallel "get:70,set:30" \
   --iteration "subset:10000:50000" \
   -n 500000 -c 100
@@ -877,7 +877,12 @@ Multiple filters can be combined - all must match (AND logic).
 
 ## See Also
 
+**Current Documentation:**
 - [README.md](README.md) - Main documentation and API reference
-- [../CLAUDE.md](../CLAUDE.md) - Developer guide with current architecture
-- [../valkey-benchmark-rust-hld.md](../valkey-benchmark-rust-hld.md) - Original design proposal (historical)
-- [../valkey-search-benchmark-LLD.md](../valkey-search-benchmark-LLD.md) - C implementation design (legacy)
+- [valkey-benchmark-rust-hld.md](valkey-benchmark-rust-hld.md) - High-Level Design (Rust)
+- [valkey-bench-rs-rust-LLD.md](valkey-bench-rs-rust-LLD.md) - Low-Level Design (Rust)
+- [../CLAUDE.md](../CLAUDE.md) - Developer guide with architecture overview
+
+**Legacy/Historical:**
+- [../valkey-benchmark-rust-hld.md](../valkey-benchmark-rust-hld.md) - Original design proposal (pre-implementation)
+- [../valkey-bench-rs-LLD.md](../valkey-bench-rs-LLD.md) - C implementation design (deprecated)

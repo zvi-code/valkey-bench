@@ -313,7 +313,7 @@ fn print_array_item(resp: &RespValue, indent: usize) {
 fn print_help() {
     println!(
         r#"
-valkey-search-benchmark CLI mode
+valkey-bench-rs CLI mode
 ================================
 
 This is an interactive command-line interface to Valkey/Redis.

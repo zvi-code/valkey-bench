@@ -1,4 +1,4 @@
-//! valkey-search-benchmark - High-performance benchmark tool for Valkey
+//! valkey-bench-rs - High-performance benchmark tool for Valkey
 //!
 //! This tool supports standard Redis/Valkey benchmarks as well as
 //! vector search (FT.SEARCH) benchmarks with recall verification.
@@ -53,7 +53,7 @@ fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseL
         return;
     }
 
-    println!("valkey-search-benchmark v{}", env!("CARGO_PKG_VERSION"));
+    println!("valkey-bench-rs v{}", env!("CARGO_PKG_VERSION"));
     println!("============================================================");
 
     // Connection info
@@ -357,7 +357,7 @@ fn run_optimization(
         println!("\n=== Recommended Command Line ===\n");
 
         // Build the full command line including connection options
-        let mut cmd_parts = vec!["./valkey-search-benchmark".to_string()];
+        let mut cmd_parts = vec!["./valkey-bench-rs".to_string()];
 
         // Add host(s)
         for addr in &base_config.addresses {
