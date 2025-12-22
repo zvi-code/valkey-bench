@@ -69,6 +69,16 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 **Description:** Develop workloads that support sharded index ingestion and querying to simulate per-key\slot index that don't require fan-out to all nodes.
 **Benefits:** Test performance and behavior in sharded index environments.
 
+### 14. Dynamic load adjustment during cluster events
+**Status:** Planned
+**Description:** Implement dynamic adjustment of load distribution during cluster events such as node additions or removals.
+**Benefits:** Maintain optimal performance and resource utilization during cluster topology changes.
+
+### 15. Support for mixed workloads and hybrid search
+**Status:** Started
+**Description:** Add support for mixed workloads involving different operation types (e.g., search, insert, delete) in a single benchmark run. This will also support having non-search operations running in the background while search operations are being benchmarked.
+**Benefits:** More realistic testing scenarios that mimic production workloads.
+
 ---
 
 ## Architecture Evolution - Design Exploration [Rust rewrite]
