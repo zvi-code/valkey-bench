@@ -1,6 +1,17 @@
 # Valkey Benchmark Tool with Valkey-Search Support
 
-A high-performance benchmarking tool for Valkey/Redis, with specialized support for valkey-search operations. Written in Rust for maximum throughput and minimal latency overhead.
+A high-performance benchmarking tool for Valkey/Redis clusters, designed to push your infrastructure to its limits while providing accurate, reproducible metrics. It delivers maximum throughput with minimal client-side overhead, ensuring your benchmarks measure server performance rather than client bottlenecks.
+
+Native cluster support includes automatic topology discovery, read-from-replica distribution, and seamless failover handling. The tool provides native support for vector search workloads with recall computation against ground truth, plus integrated tooling to download and prepare standard datasets efficiently via vectordbbench. Datasets are memory-mapped for zero-copy access, eliminating preload overhead even for billion-scale vectors.
+
+The tool supports flexible workload composition through parallel execution (mixed traffic with weighted distribution) and sequential chaining (load-then-query patterns), each with independent configuration. Extended reporting breaks down metrics by cluster node, helping identify performance imbalances across shards. All datasets and workloads can be defined via YAML schemas for reproducible, version-controlled benchmarks.
+
+Key capabilities:
+- **Production validation**: Measure throughput, latency, and recall before deployment
+- **Capacity planning**: Test cluster limits with realistic mixed read/write patterns
+- **Performance tuning**: Built-in optimizer finds optimal configurations for your latency constraints
+- **Regression testing**: Reproducible benchmarks with schema-driven datasets for CI/CD pipelines
+- **Cluster diagnostics**: Per-node metrics reveal hotspots and shard imbalances
 
 ## Features
 
