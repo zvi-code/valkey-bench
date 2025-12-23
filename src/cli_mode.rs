@@ -2,14 +2,43 @@
 //!
 //! When `--cli` is specified, the benchmark tool operates as an interactive
 //! command-line interface to Valkey/Redis, similar to valkey-cli.
+//!
+//! Features:
+//! - Command history (up/down arrows)
+//! - Persistent history across sessions (~/.valkey_bench_history)
+//! - Line editing (left/right arrows, Ctrl-A/E, etc.)
+//! - Reverse history search (Ctrl-R)
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::time::Duration;
+
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::{Config, Editor};
 
 use crate::client::control_plane::{ControlPlane, ControlPlaneExt};
 use crate::client::raw_connection::{ConnectionFactory, RawConnection};
-use crate::config::{BenchmarkConfig, CliArgs, ServerAddress};
+use crate::config::{CliArgs};
 use crate::utils::RespValue;
+
+/// Get the history file path
+fn history_file_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|mut path| {
+        path.push(".valkey_bench_history");
+        path
+    })
+}
+
+/// Helper to get home directory (fallback if dirs crate not available)
+mod dirs {
+    use std::path::PathBuf;
+
+    pub fn home_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+    }
+}
 
 /// Run interactive CLI mode
 pub fn run_cli_mode(args: &CliArgs) -> anyhow::Result<()> {
@@ -131,67 +160,93 @@ fn get_server_info(conn: &mut RawConnection) -> ServerInfo {
     }
 }
 
-/// Run the Read-Eval-Print Loop
+/// Run the Read-Eval-Print Loop with readline support
 fn run_repl(conn: &mut RawConnection, host: &str, port: u16) -> anyhow::Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    // Configure rustyline
+    let config = Config::builder()
+        .history_ignore_space(true)
+        .history_ignore_dups(true)?
+        .max_history_size(10000)?
+        .build();
+
+    let mut rl: Editor<(), DefaultHistory> = Editor::with_config(config)?;
+
+    // Load history from file
+    if let Some(history_path) = history_file_path() {
+        if history_path.exists() {
+            if let Err(e) = rl.load_history(&history_path) {
+                eprintln!("Warning: Could not load history: {}", e);
+            }
+        }
+    }
+
+    let prompt = format!("{}:{}> ", host, port);
 
     loop {
-        // Print prompt
-        print!("{}:{}> ", host, port);
-        stdout.flush()?;
+        match rl.readline(&prompt) {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
 
-        // Read line
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => {
-                // EOF (Ctrl-D)
+                // Add to history (before processing, so even failed commands are remembered)
+                let _ = rl.add_history_entry(line);
+
+                // Handle special commands
+                match line.to_lowercase().as_str() {
+                    "quit" | "exit" => break,
+                    "help" => {
+                        print_help();
+                        continue;
+                    }
+                    "clear" => {
+                        // Clear screen (ANSI escape)
+                        print!("\x1b[2J\x1b[H");
+                        io::stdout().flush()?;
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                // Parse command and arguments
+                let args = parse_command_line(line);
+                if args.is_empty() {
+                    continue;
+                }
+
+                // Execute command
+                let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                match conn.execute(&args_refs) {
+                    Ok(response) => {
+                        print_response(&response, 0);
+                    }
+                    Err(e) => {
+                        eprintln!("(error) {}", e);
+                    }
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C: print new line and continue
+                println!("^C");
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl-D: exit
                 println!();
                 break;
             }
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Error reading input: {}", e);
-                continue;
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
             }
         }
+    }
 
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Handle special commands
-        match line.to_lowercase().as_str() {
-            "quit" | "exit" => break,
-            "help" => {
-                print_help();
-                continue;
-            }
-            "clear" => {
-                // Clear screen (ANSI escape)
-                print!("\x1b[2J\x1b[H");
-                stdout.flush()?;
-                continue;
-            }
-            _ => {}
-        }
-
-        // Parse command and arguments
-        let args = parse_command_line(line);
-        if args.is_empty() {
-            continue;
-        }
-
-        // Execute command
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match conn.execute(&args_refs) {
-            Ok(response) => {
-                print_response(&response, 0);
-            }
-            Err(e) => {
-                eprintln!("(error) {}", e);
-            }
+    // Save history to file
+    if let Some(history_path) = history_file_path() {
+        if let Err(e) = rl.save_history(&history_path) {
+            eprintln!("Warning: Could not save history: {}", e);
         }
     }
 
@@ -325,6 +380,17 @@ Built-in commands:
   exit     Exit the CLI
   clear    Clear the screen
 
+Keyboard shortcuts:
+  Up/Down      Navigate command history
+  Left/Right   Move cursor within line
+  Ctrl-A       Jump to beginning of line
+  Ctrl-E       Jump to end of line
+  Ctrl-W       Delete word backward
+  Ctrl-U       Clear line
+  Ctrl-R       Reverse history search
+  Ctrl-C       Cancel current input
+  Ctrl-D       Exit CLI
+
 Example commands:
   PING                       Check connection
   SET key value              Set a key
@@ -337,6 +403,7 @@ Example commands:
   FT.SEARCH idx "*"          Search query
 
 Tip: Use quotes for values with spaces: SET key "hello world"
+History is saved to ~/.valkey_bench_history
 "#
     );
 }
