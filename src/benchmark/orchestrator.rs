@@ -1012,7 +1012,8 @@ impl Orchestrator {
                 self.config.keyspace_len,
                 self.config.data_size,
                 self.config.search_config.as_ref(),
-                self.config.dataset_path.as_ref(),
+                self.config.schema_path.as_ref(),
+                self.config.data_path.as_ref(),
             );
             if !self.config.quiet {
                 println!("\nRunning parallel test: {}", parallel_workload.name());

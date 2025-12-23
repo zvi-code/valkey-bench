@@ -8,7 +8,7 @@ Quick setup guide for the Valkey Benchmark (valkey-bench-rs) environment.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3 python3-pip python3-venv libhdf5-dev pkg-config libssl-dev
+sudo apt-get install -y python3 python3-pip python3-venv python3-numpy python3-yaml libhdf5-dev pkg-config libssl-dev
 ```
 
 ### Step 2: Install Rust
@@ -82,18 +82,39 @@ pip install vectordb-bench==1.0.10 h5py pandas pyarrow numpy
 ./prep_datasets/dataset.sh get mnist
 ```
 
-### Step 9: Run a Test Benchmark
+### Step 9: Create Test Datasets
+
+```bash
+# Create test datasets (YAML schema + binary data)
+python3 prep_datasets/create_test_dataset.py -o datasets
+```
+
+This creates three test datasets:
+- `test_small.yaml` + `test_small.bin` - 100 vectors, 32 dimensions
+- `test_mnist.yaml` + `test_mnist.bin` - 1000 vectors, 784 dimensions
+- `test_hash.yaml` + `test_hash.bin` - 100 records with vector + category + price fields
+
+### Step 10: Run a Test Benchmark
 
 ```bash
 # Test connectivity (replace with your server address)
 ./target/release/valkey-bench-rs -h localhost -p 6379 -t ping -n 1000 -q
 
-# Run vector benchmark with dataset
+# Run vector benchmark with schema-driven dataset
 ./target/release/valkey-bench-rs -h localhost -p 6379 \
-  --dataset datasets/mnist.bin \
-  --search-index mnist-test \
-  --search-prefix zvec_: \
-  -t vec-load -n 1000
+  --schema datasets/test_small.yaml \
+  --data datasets/test_small.bin \
+  --search-index test-idx \
+  --search-prefix test: \
+  -t vec-load -n 100
+
+# Run vector query benchmark
+./target/release/valkey-bench-rs -h localhost -p 6379 \
+  --schema datasets/test_small.yaml \
+  --data datasets/test_small.bin \
+  --search-index test-idx \
+  --search-prefix test: \
+  -t vec-query -n 100 -k 5
 ```
 
 ---

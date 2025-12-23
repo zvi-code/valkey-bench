@@ -1,0 +1,23 @@
+version: 1
+metadata:
+  name: test_small
+  description: 'Test vector dataset: 100 vectors, 32 dimensions'
+record:
+  fields:
+  - name: embedding
+    type: vector
+    dtype: float32
+    dimensions: 32
+sections:
+  records:
+    count: 100
+  keys:
+    present: false
+    pattern: vec:{id}
+  queries:
+    present: true
+    count: 10
+  ground_truth:
+    present: true
+    neighbors_per_query: 5
+    id_type: u64

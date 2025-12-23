@@ -74,7 +74,8 @@ pub struct BenchmarkConfig {
 
     // Vector search
     pub search_config: Option<SearchConfig>,
-    pub dataset_path: Option<PathBuf>,
+    pub schema_path: Option<PathBuf>,
+    pub data_path: Option<PathBuf>,
     pub filtered_search: bool,
     pub num_vectors: u64,
     pub vector_offset: u64,
@@ -136,7 +137,7 @@ impl BenchmarkConfig {
         };
 
         // Build search config if needed
-        let search_config = if args.dataset.is_some()
+        let search_config = if args.schema.is_some()
             || args
                 .tests
                 .as_ref()
@@ -197,7 +198,8 @@ impl BenchmarkConfig {
             custom_command: args.custom_command.clone(),
 
             search_config,
-            dataset_path: args.dataset.clone(),
+            schema_path: args.schema.clone(),
+            data_path: args.data.clone(),
             filtered_search: args.filtered_search,
             num_vectors: args.num_vectors,
             vector_offset: args.vector_offset,
@@ -236,7 +238,8 @@ impl BenchmarkConfig {
             self.keyspace_len,
             self.data_size,
             self.search_config.clone(),
-            self.dataset_path.clone(),
+            self.schema_path.clone(),
+            self.data_path.clone(),
         )
     }
 }

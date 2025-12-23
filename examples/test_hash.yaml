@@ -1,0 +1,28 @@
+version: 1
+metadata:
+  name: test_hash
+  description: Test hash dataset with vector, category, and price fields
+record:
+  fields:
+  - name: embedding
+    type: vector
+    dtype: float32
+    dimensions: 128
+  - name: category
+    type: tag
+    encoding: utf8
+    length: fixed
+    max_bytes: 32
+  - name: price
+    type: numeric
+    dtype: float64
+sections:
+  records:
+    count: 100
+  keys:
+    present: false
+    pattern: product:{id}
+  queries:
+    present: false
+  ground_truth:
+    present: false

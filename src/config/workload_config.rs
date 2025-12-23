@@ -34,8 +34,11 @@ pub struct WorkloadConfig {
     /// Search configuration for vector workloads
     pub search_config: Option<SearchConfig>,
 
-    /// Dataset path for vector workloads
-    pub dataset_path: Option<PathBuf>,
+    /// Schema path for vector workloads
+    pub schema_path: Option<PathBuf>,
+
+    /// Data path for vector workloads
+    pub data_path: Option<PathBuf>,
 
     /// Read-from-replica override for this workload
     /// None means use global setting
@@ -51,7 +54,8 @@ impl WorkloadConfig {
             keyspace: 1_000_000,
             data_size: 3,
             search_config: None,
-            dataset_path: None,
+            schema_path: None,
+            data_path: None,
             rfr_override: None,
         }
     }
@@ -63,7 +67,8 @@ impl WorkloadConfig {
         keyspace: u64,
         data_size: usize,
         search_config: Option<SearchConfig>,
-        dataset_path: Option<PathBuf>,
+        schema_path: Option<PathBuf>,
+        data_path: Option<PathBuf>,
     ) -> Self {
         Self {
             workload_type,
@@ -71,7 +76,8 @@ impl WorkloadConfig {
             keyspace,
             data_size,
             search_config,
-            dataset_path,
+            schema_path,
+            data_path,
             rfr_override: None,
         }
     }
@@ -100,9 +106,10 @@ impl WorkloadConfig {
         self
     }
 
-    /// Builder-style: set dataset path
-    pub fn with_dataset(mut self, path: PathBuf) -> Self {
-        self.dataset_path = Some(path);
+    /// Builder-style: set schema and data paths
+    pub fn with_dataset(mut self, schema_path: PathBuf, data_path: PathBuf) -> Self {
+        self.schema_path = Some(schema_path);
+        self.data_path = Some(data_path);
         self
     }
 

@@ -124,8 +124,11 @@ fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseL
     }
 
     // Dataset
-    if let Some(ref path) = config.dataset_path {
-        println!("Dataset: {}", path.display());
+    if let Some(ref schema_path) = config.schema_path {
+        println!("Schema: {}", schema_path.display());
+        if let Some(ref data_path) = config.data_path {
+            println!("Data: {}", data_path.display());
+        }
     }
 
     println!("============================================================\n");
@@ -408,8 +411,11 @@ fn run_optimization(
         }
 
         // Add dataset if used
-        if let Some(ref dataset_path) = base_config.dataset_path {
-            cmd_parts.push(format!("--dataset {}", dataset_path.display()));
+        if let Some(ref schema_path) = base_config.schema_path {
+            cmd_parts.push(format!("--schema {}", schema_path.display()));
+        }
+        if let Some(ref data_path) = base_config.data_path {
+            cmd_parts.push(format!("--data {}", data_path.display()));
         }
 
         // Add index name if not default
@@ -476,20 +482,21 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Configuration error: {}", e))?;
 
     // Load dataset if specified and update config with dataset dimensions
-    let dataset = if let Some(ref dataset_path) = config.dataset_path {
-        info!("Loading dataset from: {:?}", dataset_path);
-        let dataset = DatasetContext::open(dataset_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load dataset: {}", e))?;
-        info!("{}", dataset.summary());
+    let dataset = match (&config.schema_path, &config.data_path) {
+        (Some(schema_path), Some(data_path)) => {
+            info!("Loading dataset: schema={:?}, data={:?}", schema_path, data_path);
+            let dataset = DatasetContext::open(schema_path, data_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load dataset: {}", e))?;
+            info!("{}", dataset.summary());
 
-        // Update search config with dataset dimension
-        if let Some(ref mut search_config) = config.search_config {
-            search_config.set_dim(dataset.dim() as u32);
+            // Update search config with dataset dimension
+            if let Some(ref mut search_config) = config.search_config {
+                search_config.set_dim(dataset.dim() as u32);
+            }
+
+            Some(dataset)
         }
-
-        Some(dataset)
-    } else {
-        None
+        _ => None,
     };
 
     // If optimization mode is enabled, run the optimizer (no base latency needed)

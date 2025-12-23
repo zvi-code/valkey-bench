@@ -17,6 +17,8 @@ export DATASET="/path/to/your/vectors.bin"
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Schema-Driven Datasets](#schema-driven-datasets)
+- [Creating Custom Datasets](#creating-custom-datasets)
 - [Parallel Workloads (Mixed Traffic)](#parallel-workloads-mixed-traffic)
 - [Composite Workloads (Sequential Phases)](#composite-workloads-sequential-phases)
 - [Iteration Strategies](#iteration-strategies)
@@ -45,6 +47,198 @@ cargo build --release
 
 # Interactive CLI mode
 ./target/release/valkey-bench-rs --cli -h $HOST
+```
+
+---
+
+## Schema-Driven Datasets
+
+The schema-driven format uses separate YAML schema and binary data files for flexible dataset configuration.
+
+### Basic Usage
+
+```bash
+# Set paths for schema-driven datasets
+export SCHEMA="datasets/mnist.yaml"
+export DATA="datasets/mnist.bin"
+
+# Load vectors using schema + data files
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema $SCHEMA --data $DATA \
+  -t vec-load -n 60000 -c 100 --threads 16
+
+# Query with recall measurement
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema $SCHEMA --data $DATA \
+  -t vec-query -n 10000 -c 50 --search-index mnist_idx
+```
+
+### Vector Dataset with Ground Truth
+
+```bash
+# Load MNIST vectors (60,000 training vectors)
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/mnist.yaml \
+  --data datasets/mnist.bin \
+  -t vec-load -n 60000 -c 100 --threads 16 \
+  --search-index mnist_idx --search-prefix "vec:"
+
+# Query with automatic recall computation (uses 10,000 query vectors)
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/mnist.yaml \
+  --data datasets/mnist.bin \
+  -t vec-query -n 10000 -c 50 \
+  --search-index mnist_idx --ef-search 100 -k 10
+```
+
+### Key-Value Dataset Replay
+
+```bash
+# Replay recorded SET commands (3M keys with 500-byte values)
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/kv_3m.yaml \
+  --data datasets/kv_3m.bin \
+  -t set -n 3000000 -c 200 --threads 16
+
+# Run GET benchmark on same keyspace
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  -t get -n 3000000 -r 3000000 -c 500 --threads 52
+```
+
+### E-commerce Product Catalog
+
+```bash
+# Load products with embeddings, categories, and prices
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/product_catalog.yaml \
+  --data datasets/product_catalog.bin \
+  -t vec-load -n 100000 -c 100 \
+  --search-index products --search-prefix "product:"
+
+# Query with category filter
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/product_catalog.yaml \
+  --data datasets/product_catalog.bin \
+  -t vec-query -n 10000 -c 50 \
+  --search-index products \
+  --tag-field category --tag-filter "electronics"
+```
+
+---
+
+## Creating Custom Datasets
+
+Use the CommandRecorder API to create custom datasets for your specific benchmarking needs.
+
+### Using create_kv_dataset.py Example
+
+```bash
+cd prep_datasets
+
+# Generate 3M keys with 500-byte values
+python create_kv_dataset.py -o ../datasets/kv_3m -n 3000000 -d 500
+
+# Generate smaller test dataset
+python create_kv_dataset.py -o ../datasets/kv_test -n 10000 -d 100
+
+# Custom prefix
+python create_kv_dataset.py -o ../datasets/users -n 100000 -d 256 --prefix "user:"
+```
+
+### CommandRecorder API: Key-Value Dataset
+
+```python
+from command_recorder import CommandRecorder, Blob
+import numpy as np
+
+# Create recorder
+rec = CommandRecorder(name="my_kv_dataset")
+
+# Declare schema upfront (recommended for large datasets)
+rec.declare_field("_arg0", "blob", max_bytes=500)
+
+# Record SET commands
+for i in range(3000000):
+    value = np.random.bytes(500)
+    rec.record("SET", f"key:{i:012d}", Blob(value))
+
+# Generate schema YAML + binary data
+rec.generate("datasets/my_kv")  # Creates my_kv.yaml + my_kv.bin
+```
+
+### CommandRecorder API: Vector Search Dataset
+
+```python
+from command_recorder import CommandRecorder, Vector, Tag, Numeric
+import numpy as np
+
+rec = CommandRecorder(name="product_embeddings")
+
+# Declare fields upfront
+rec.declare_field("embedding", "vector", dim=768, dtype="float32")
+rec.declare_field("category", "tag", max_bytes=32)
+rec.declare_field("price", "numeric", dtype="float64")
+
+# Record HSET commands
+np.random.seed(42)
+categories = ["electronics", "clothing", "home", "sports", "books"]
+
+for i in range(100000):
+    vec = np.random.randn(768).astype(np.float32)
+    category = np.random.choice(categories)
+    price = np.random.uniform(9.99, 999.99)
+
+    rec.record("HSET", f"product:{i:06d}",
+               "embedding", Vector(vec),
+               "category", Tag(category),
+               "price", Numeric(price))
+
+rec.generate("datasets/products")
+```
+
+### CommandRecorder API: With Query Vectors
+
+```python
+from command_recorder import CommandRecorder, Vector
+import numpy as np
+
+rec = CommandRecorder(name="vectors_with_queries")
+rec.declare_field("embedding", "vector", dim=128, dtype="float32")
+
+# Training vectors
+np.random.seed(42)
+for i in range(10000):
+    vec = np.random.randn(128).astype(np.float32)
+    rec.record("HSET", f"vec:{i:06d}", "embedding", Vector(vec))
+
+# Add query vectors (optional)
+rec.add_queries([np.random.randn(128).astype(np.float32) for _ in range(100)])
+
+# Add ground truth neighbors (optional, for recall computation)
+# Each entry is a list of neighbor IDs for the corresponding query
+rec.add_ground_truth([[i*10, i*10+1, i*10+2] for i in range(100)])
+
+rec.generate("datasets/vectors")
+```
+
+### Using Generated Datasets
+
+```bash
+# Use the generated dataset
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/products.yaml \
+  --data datasets/products.bin \
+  -t vec-load -n 100000 -c 100 --threads 16 \
+  --search-index products --search-prefix "product:"
+
+# Query with filters
+./target/release/valkey-bench-rs -h $HOST --cluster \
+  --schema datasets/products.yaml \
+  --data datasets/products.bin \
+  -t vec-query -n 10000 -c 50 \
+  --search-index products \
+  --tag-field category --tag-filter "electronics|clothing" \
+  --numeric-filter "price:[10,100]"
 ```
 
 ---
@@ -877,12 +1071,13 @@ Multiple filters can be combined - all must match (AND logic).
 
 ## See Also
 
-**Current Documentation:**
+**Documentation:**
 - [README.md](README.md) - Main documentation and API reference
-- [valkey-benchmark-rust-hld.md](valkey-benchmark-rust-hld.md) - High-Level Design (Rust)
-- [valkey-bench-rs-rust-LLD.md](valkey-bench-rs-rust-LLD.md) - Low-Level Design (Rust)
-- [../CLAUDE.md](../CLAUDE.md) - Developer guide with architecture overview
+- [DATASETS.md](DATASETS.md) - Dataset format and schema reference
+- [BENCHMARKING.md](BENCHMARKING.md) - Complete benchmarking guide
+- [ADVANCED.md](ADVANCED.md) - Optimizer, metadata filtering, advanced features
+- [examples/](examples/) - Sample datasets and Python scripts
 
-**Legacy/Historical:**
-- [../valkey-benchmark-rust-hld.md](../valkey-benchmark-rust-hld.md) - Original design proposal (pre-implementation)
-- [../valkey-bench-rs-LLD.md](../valkey-bench-rs-LLD.md) - C implementation design (deprecated)
+**Design Documents:**
+- [docs/valkey-benchmark-rust-hld.md](docs/valkey-benchmark-rust-hld.md) - High-Level Design
+- [docs/valkey-bench-rs-rust-LLD.md](docs/valkey-bench-rs-rust-LLD.md) - Low-Level Design

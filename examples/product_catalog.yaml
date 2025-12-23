@@ -1,0 +1,38 @@
+version: 1
+metadata:
+  name: product_catalog
+  description: 'Recorded dataset: 100 HSET commands'
+replay:
+  command: HSET
+record:
+  fields:
+  - name: category
+    type: tag
+    max_bytes: 32
+    encoding: utf8
+    length: fixed
+  - name: embedding
+    type: vector
+    dtype: float32
+    dimensions: 128
+  - name: name
+    type: text
+    max_bytes: 128
+    encoding: utf8
+    length: fixed
+  - name: price
+    type: numeric
+    dtype: float64
+sections:
+  records:
+    count: 100
+  keys:
+    present: true
+    encoding: utf8
+    length: fixed
+    max_bytes: 32
+field_metadata:
+  category:
+    index_type: tag
+  embedding:
+    distance_metric: cosine

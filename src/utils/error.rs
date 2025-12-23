@@ -93,6 +93,12 @@ pub enum DatasetError {
 
     #[error("Failed to open dataset: {0}")]
     OpenFailed(io::Error),
+
+    #[error("Schema error: {0}")]
+    Schema(String),
+
+    #[error("Invalid schema: {0}")]
+    InvalidSchema(String),
 }
 
 /// Cluster-related errors

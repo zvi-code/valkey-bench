@@ -286,9 +286,13 @@ pub struct CliArgs {
     pub numeric_filters: Vec<String>,
 
     // ===== Dataset Options =====
+    /// Path to dataset schema YAML file
+    #[arg(long = "schema")]
+    pub schema: Option<PathBuf>,
+
     /// Path to binary dataset file
-    #[arg(long = "dataset")]
-    pub dataset: Option<PathBuf>,
+    #[arg(long = "data")]
+    pub data: Option<PathBuf>,
 
     /// Enable filtered search (use dataset metadata)
     #[arg(long = "filtered-search")]
@@ -489,6 +493,11 @@ impl CliArgs {
             return Err("--pipeline must be at least 1".to_string());
         }
 
+        // Schema and data must both be specified together
+        if self.schema.is_some() != self.data.is_some() {
+            return Err("--schema and --data must both be specified".to_string());
+        }
+
         // Dataset required for vector search tests
         if let Some(ref tests) = self.tests {
             let needs_dataset = tests.iter().any(|t| {
@@ -497,8 +506,8 @@ impl CliArgs {
                     "vecload" | "vecquery" | "vec-load" | "vec-query"
                 )
             });
-            if needs_dataset && self.dataset.is_none() {
-                return Err("Vector search tests require --dataset".to_string());
+            if needs_dataset && self.schema.is_none() {
+                return Err("Vector search tests require --schema and --data".to_string());
             }
         }
 

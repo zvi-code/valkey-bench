@@ -8,6 +8,7 @@ A high-performance benchmarking tool for Valkey/Redis, with specialized support 
 - **Pipeline Support**: Configurable command pipelining for maximum throughput
 - **Cluster Support**: Automatic topology discovery, slot routing, and MOVED/ASK handling
 - **Read-From-Replica**: Distribute read traffic across replicas for horizontal scaling
+- **Schema-Driven Datasets**: Flexible YAML schema + binary data format for custom datasets
 - **Vector Search**: FT.CREATE, FT.SEARCH with recall@k computation against ground truth
 - **Filtered Search**: Tag and numeric field support with configurable distributions
 - **Multiple Workloads**: PING, GET, SET, HSET, LPUSH, RPUSH, SADD, ZADD, and vector operations
@@ -21,6 +22,7 @@ A high-performance benchmarking tool for Valkey/Redis, with specialized support 
 - **JSON Output**: Machine-readable results for CI/CD integration
 - **Parameter Optimizer**: Automatic tuning of clients, threads, pipeline, and ef_search to maximize throughput under constraints
 - **Base RTT Measurement**: Measures single-client PING and GET-miss latency to establish network baseline
+- **Custom Dataset Creation**: Python API (CommandRecorder) for creating benchmark datasets
 
 For comprehensive examples of all features, see [EXAMPLES.md](EXAMPLES.md).
 
@@ -586,11 +588,31 @@ Vector datasets use a binary format with the following structure:
    - Query vectors
    - Ground truth neighbor IDs (for recall computation)
 
-### Vector Search Options
+### Dataset Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--dataset <FILE>` | Binary dataset file | None |
+| `--schema <FILE>` | Schema YAML file (schema-driven format) | None |
+| `--data <FILE>` | Binary data file (schema-driven format) | None |
+| `--dataset <FILE>` | Legacy binary dataset file with embedded header | None |
+
+**Schema-driven format (recommended):**
+```bash
+./valkey-bench-rs -h HOST --cluster \
+  --schema datasets/mnist.yaml --data datasets/mnist.bin \
+  -t vec-load -n 60000 -c 100
+```
+
+**Legacy format:**
+```bash
+./valkey-bench-rs -h HOST --cluster \
+  --dataset datasets/legacy.bin \
+  -t vec-load -n 60000 -c 100
+```
+
+### Vector Search Options
+
+| Option | Description | Default |
 | `--search-index <NAME>` | Vector index name | `idx` |
 | `--search-prefix <PREFIX>` | Key prefix for vectors | `vec:` |
 | `--search-vector-field <NAME>` | Vector field name in hash | `embedding` |

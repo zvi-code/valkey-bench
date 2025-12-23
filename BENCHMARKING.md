@@ -10,7 +10,33 @@ Complete guide for running vector search benchmarks with valkey-bench-rs.
 2. **Run query benchmarks** with recall validation (vec-query phase)
 3. **Analyze results** (QPS, latency, recall)
 
-### Example: COHERE 1M Dataset
+### Example: MNIST Dataset (Schema-Driven Format)
+
+The recommended approach uses schema-driven datasets (YAML schema + binary data):
+
+```bash
+# Step 1: Load vectors using schema + data files
+./target/release/valkey-bench-rs \
+  -h localhost --cluster \
+  --schema datasets/mnist.yaml \
+  --data datasets/mnist.bin \
+  -t vec-load \
+  --search-index mnist_idx --search-prefix vec: \
+  -n 60000 -c 100 --threads 16
+
+# Step 2: Run query benchmark with automatic recall computation
+./target/release/valkey-bench-rs \
+  -h localhost --cluster \
+  --schema datasets/mnist.yaml \
+  --data datasets/mnist.bin \
+  -t vec-query \
+  --search-index mnist_idx \
+  -n 10000 -c 50 --threads 10 -k 10
+```
+
+### Example: COHERE 1M Dataset (Legacy Format)
+
+For datasets in legacy binary format (single file with embedded header):
 
 ```bash
 # Step 1: Load all vectors into Valkey
@@ -30,6 +56,24 @@ Complete guide for running vector search benchmarks with valkey-bench-rs.
   -n 10000 -c 10 --threads 10
 ```
 
+### Example: Key-Value Benchmark (Schema-Driven)
+
+Run GET/SET benchmarks with pre-recorded datasets:
+
+```bash
+# Load 3M keys with 500-byte values from recorded dataset
+./target/release/valkey-bench-rs \
+  -h localhost --cluster \
+  --schema datasets/kv_3m.yaml \
+  --data datasets/kv_3m.bin \
+  -t set -n 3000000 -c 200 --threads 16
+
+# Run GET benchmark on same keyspace
+./target/release/valkey-bench-rs \
+  -h localhost --cluster \
+  -t get -n 3000000 -r 3000000 -c 500 --threads 52
+```
+
 ## Understanding Command Options
 
 ### Connection Options
@@ -45,9 +89,20 @@ Complete guide for running vector search benchmarks with valkey-bench-rs.
 
 ### Dataset Options
 
+Two dataset formats are supported:
+
+**Schema-Driven Format (Recommended):**
 ```bash
---dataset <file>    # Path to binary dataset file
+--schema <file>     # Path to schema YAML file
+--data <file>       # Path to binary data file
 ```
+
+**Legacy Format:**
+```bash
+--dataset <file>    # Path to legacy binary dataset file (with embedded header)
+```
+
+See [DATASETS.md](DATASETS.md) for schema format documentation and creating custom datasets.
 
 ### Index Options
 
@@ -441,7 +496,8 @@ print(data)
 
 ## Next Steps
 
+- **Example Datasets**: See [examples/](examples/) for sample datasets and Python scripts
 - **Advanced Features**: See [ADVANCED.md](ADVANCED.md) for optimizer internals and metadata filtering
-- **Dataset Management**: See [DATASETS.md](DATASETS.md) for more datasets
+- **Dataset Management**: See [DATASETS.md](DATASETS.md) for schema format and custom dataset creation
 - **Installation**: See [INSTALLATION.md](INSTALLATION.md) for environment setup
-- **Examples**: See [EXAMPLES.md](EXAMPLES.md) for comprehensive examples
+- **Examples**: See [EXAMPLES.md](EXAMPLES.md) for comprehensive benchmark examples

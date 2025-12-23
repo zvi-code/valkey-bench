@@ -44,81 +44,67 @@ source "$VENV_DIR/bin/activate"
 echo -e "${YELLOW}Step 2: Upgrading pip...${NC}"
 pip install --upgrade pip
 
-# Step 3: Uninstall existing packages to avoid conflicts
-echo -e "${YELLOW}Step 3: Cleaning existing installations...${NC}"
-pip uninstall -y vectordb-bench redis redis-py-cluster redisearch 2>/dev/null || true
+# Step 3: Reinstall vectordb-bench with redis support
+echo -e "${YELLOW}Step 5: Installing VectorDBBench with MemoryDB support...${NC}"
+pip install vectordb-bench[memorydb]
 
-# Step 4: Install redis with search capabilities
-echo -e "${YELLOW}Step 4: Installing Redis with RediSearch support...${NC}"
-pip install redis>=4.5.0
-
-# Step 5: Reinstall vectordb-bench with redis support
-echo -e "${YELLOW}Step 5: Installing VectorDBBench with Redis support...${NC}"
-pip install vectordb-bench[redis]
-
-# Step 6: Install additional dependencies for dataset conversion
+# Step 4: Install additional dependencies for dataset conversion
 echo -e "${YELLOW}Step 6: Installing dataset conversion dependencies...${NC}"
 pip install h5py pandas pyarrow numpy
 
-# Step 7: Verify the installation
-echo -e "${YELLOW}Step 6: Verifying installation...${NC}"
-python -c "
-import sys
-try:
-    from redis.commands.search.indexDefinition import IndexDefinition
-    print('✓ RediSearch module imports successfully')
-except ImportError as e:
-    print(f'✗ Still missing: {e}')
-    sys.exit(1)
+# # Step 5 Verify the installation
+# echo -e "${YELLOW}Step 6: Verifying installation...${NC}"
+# python -c "
+# import sys
+# try:
+#     from redis.commands.search.indexDefinition import IndexDefinition
+#     print('✓ RediSearch module imports successfully')
+# except ImportError as e:
+#     print(f'✗ Still missing: {e}')
+#     sys.exit(1)
 
-try:
-    import vectordb_bench
-    print('✓ VectorDBBench imports successfully')
-except ImportError as e:
-    print(f'✗ VectorDBBench import failed: {e}')
-    sys.exit(1)
-"
+# try:
+#     import vectordb_bench
+#     print('✓ VectorDBBench imports successfully')
+# except ImportError as e:
+#     print(f'✗ VectorDBBench import failed: {e}')
+#     sys.exit(1)
+# "
 
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Installation successful!${NC}"
-    echo ""
-    echo "You can now run the benchmark:"
-    echo "  ./run-5m-benchmark.sh run"
-else
-    echo -e "${RED}✗ Installation failed. Trying alternative fix...${NC}"
+# if [ $? -eq 0 ]; then
+#     echo -e "${GREEN}✓ Installation successful!${NC}"
+#     echo ""
+#     echo "You can now run the benchmark:"
+#     echo "  ./run-5m-benchmark.sh run"
+# else
+#     echo -e "${RED}✗ Installation failed. Trying alternative fix...${NC}"
     
-    # Alternative fix: Install specific versions
-    echo -e "${YELLOW}Installing specific compatible versions...${NC}"
-    pip install "redis>=5.0.0" "redis-py-cluster>=2.1.0"
+#     # Alternative fix: Install specific versions
+#     echo -e "${YELLOW}Installing specific compatible versions...${NC}"
+#     pip install "redis>=5.0.0" "redis-py-cluster>=2.1.0"
     
-    # If still failing, try with redisearch
-    echo -e "${YELLOW}Installing redisearch package...${NC}"
-    pip install redisearch
+#     # If still failing, try with redisearch
+#     echo -e "${YELLOW}Installing redisearch package...${NC}"
+#     pip install redisearch
     
-    # Final verification
-    python -c "
-import sys
-try:
-    from redis.commands.search import Search
-    from redis import Redis
-    print('✓ Redis Search components available')
-except ImportError as e:
-    print(f'Warning: Some components missing but may still work: {e}')
-"
-fi
+#     # Final verification
+#     python -c "
+# import sys
+# try:
+#     from redis.commands.search import Search
+#     from redis import Redis
+#     print('✓ Redis Search components available')
+# except ImportError as e:
+#     print(f'Warning: Some components missing but may still work: {e}')
+# "
+# fi
 
 echo ""
 echo -e "${GREEN}Dependency fix complete!${NC}"
 echo ""
 echo "Next steps:"
-echo "1. To use the installed packages, activate the virtual environment:"
-echo "   source venv/bin/activate"
-echo ""
-echo "2. Try running the benchmark:"
-echo "   vectordbbench redis --help"
-echo ""
-echo "3. Or download datasets:"
+echo "download datasets:"
 echo "   ./prep_datasets/dataset.sh get cohere-large-10m"
 echo ""
-echo "4. When done, deactivate the virtual environment:"
+echo "When done, deactivate the virtual environment:"
 echo "   deactivate"

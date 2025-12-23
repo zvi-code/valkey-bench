@@ -198,7 +198,8 @@ impl CompositeWorkload {
         keyspace: u64,
         data_size: usize,
         search_config: Option<&SearchConfig>,
-        dataset_path: Option<&std::path::PathBuf>,
+        schema_path: Option<&std::path::PathBuf>,
+        data_path: Option<&std::path::PathBuf>,
     ) {
         for phase in &mut self.phases {
             // Apply defaults to each phase's config
@@ -208,8 +209,11 @@ impl CompositeWorkload {
             if let Some(sc) = search_config {
                 phase.config.search_config = Some(sc.clone());
             }
-            if let Some(dp) = dataset_path {
-                phase.config.dataset_path = Some(dp.clone());
+            if let Some(sp) = schema_path {
+                phase.config.schema_path = Some(sp.clone());
+            }
+            if let Some(dp) = data_path {
+                phase.config.data_path = Some(dp.clone());
             }
         }
     }

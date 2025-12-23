@@ -1,6 +1,48 @@
 # Dataset Management Guide
 
-Complete guide for downloading, converting, and managing vector datasets for benchmarking.
+Complete guide for downloading, converting, and managing datasets for benchmarking.
+
+## Dataset Formats
+
+valkey-bench-rs supports two dataset formats:
+
+### Schema-Driven Format (Recommended)
+
+The schema-driven format separates metadata (YAML) from data (binary):
+
+```
+dataset.yaml  # Schema describing structure, fields, and sections
+dataset.bin   # Raw binary data (vectors, keys, values)
+```
+
+**Advantages:**
+- Human-readable schema for easy inspection
+- Zero-copy memory-mapped access
+- Supports command replay (SET, HSET, etc.)
+- Flexible field types: vector, tag, text, numeric, blob
+- No embedded headers in binary file
+
+**Usage:**
+```bash
+./target/release/valkey-bench-rs -h HOST --cluster \
+  --schema datasets/mnist.yaml \
+  --data datasets/mnist.bin \
+  -t vec-load -n 60000 -c 100
+```
+
+### Legacy Binary Format
+
+Single binary file with embedded header:
+```
+dataset.bin  # Header + vectors + queries + ground truth
+```
+
+**Usage:**
+```bash
+./target/release/valkey-bench-rs -h HOST --cluster \
+  --dataset datasets/legacy.bin \
+  -t vec-load -n 60000 -c 100
+```
 
 ## Quick Start
 
@@ -363,7 +405,60 @@ hexdump -C dataset.bin | head -20
 
 ## Custom Dataset Integration
 
-To add your own dataset:
+### Method 1: CommandRecorder API (Recommended)
+
+Use the Python CommandRecorder API to create schema-driven datasets:
+
+```python
+from prep_datasets.command_recorder import CommandRecorder, Vector, Tag, Blob, Numeric
+import numpy as np
+
+# Create recorder
+rec = CommandRecorder(name="my_products")
+
+# Declare schema upfront (optional but recommended)
+rec.declare_field("embedding", "vector", dim=128, dtype="float32")
+rec.declare_field("category", "tag", max_bytes=32)
+rec.declare_field("price", "numeric", dtype="float64")
+
+# Record HSET commands
+for i in range(10000):
+    vec = np.random.rand(128).astype(np.float32)
+    rec.record("HSET", f"product:{i:06d}",
+               "embedding", Vector(vec),
+               "category", Tag("electronics"),
+               "price", Numeric(99.99))
+
+# Generate schema + binary
+rec.generate("datasets/my_products")  # Creates .yaml and .bin
+```
+
+**For key-value datasets:**
+
+```python
+rec = CommandRecorder(name="my_kv")
+rec.declare_field("_arg0", "blob", max_bytes=500)
+
+for i in range(3000000):
+    value = np.random.bytes(500)
+    rec.record("SET", f"key:{i:012d}", Blob(value))
+
+rec.generate("datasets/my_kv")
+```
+
+**Usage:**
+```bash
+./target/release/valkey-bench-rs -h HOST --cluster \
+  --schema datasets/my_products.yaml \
+  --data datasets/my_products.bin \
+  -t vec-load -n 10000 -c 50
+```
+
+See `examples/create_kv_dataset.py` for a complete working example.
+
+### Method 2: HDF5 Conversion (Vector Datasets)
+
+For standard vector datasets in HDF5 format:
 
 1. **Prepare HDF5** with required structure:
    ```python
@@ -375,20 +470,179 @@ To add your own dataset:
        f.create_dataset('distances', data=gt_distances)  # [Q, k]
    ```
 
-2. **Convert to binary**:
+2. **Convert to schema-driven format**:
    ```bash
-   python prep_datasets/prepare_binary.py \
-     custom.hdf5 custom.bin \
-     --metric L2 --max-neighbors 100
+   python prep_datasets/prepare_schema_binary.py hdf5 \
+     custom.hdf5 datasets/custom \
+     --name custom --metric L2 --max-neighbors 100
    ```
 
 3. **Verify**:
    ```bash
-   ./prep_datasets/dataset.sh verify custom.bin
+   ./prep_datasets/dataset.sh verify datasets/custom.yaml
    ```
+
+## Schema Format Reference
+
+### Complete Schema Structure
+
+```yaml
+version: 1
+
+metadata:
+  name: dataset_name                    # Required
+  description: Human-readable description
+
+# Command replay (for SET, HSET commands)
+replay:
+  command: HSET                         # SET or HSET
+
+# Record structure
+record:
+  fields:
+  - name: field_name
+    type: vector|tag|text|numeric|blob
+    # Type-specific options below
+
+# Data sections
+sections:
+  records:
+    count: 60000                        # Number of records
+  keys:
+    present: true|false                 # Keys stored in binary?
+    pattern: "vec:{HASHTAG}:%012d"      # Key pattern for generated keys
+    encoding: utf8
+    max_bytes: 32
+  queries:
+    present: true|false
+    count: 10000
+  ground_truth:
+    present: true|false
+    neighbors_per_query: 100
+    id_type: u64|u32
+
+# Optional field metadata (for index creation hints)
+field_metadata:
+  embedding:
+    distance_metric: l2|cosine|ip
+  category:
+    index_type: tag
+```
+
+### Field Types
+
+| Type | Options | Binary Format |
+|------|---------|---------------|
+| `vector` | `dtype: float32\|float16`, `dimensions: N` | N x sizeof(dtype) |
+| `tag` | `max_bytes: N`, `encoding: utf8` | Fixed N bytes |
+| `text` | `max_bytes: N`, `encoding: utf8` | Fixed N bytes |
+| `numeric` | `dtype: float64\|int64\|int32` | sizeof(dtype) |
+| `blob` | `max_bytes: N` | Fixed N bytes |
+
+### Key Patterns
+
+Use patterns for automatic key generation:
+
+| Pattern | Description |
+|---------|-------------|
+| `{HASHTAG}` | Random cluster tag (e.g., `{ABC}`) |
+| `%012d` | Zero-padded record ID |
+| `{id}` | Simple ID placeholder |
+
+Example: `vec:{HASHTAG}:%012d` generates keys like `vec:{ABC}:000000000042`
+
+### Example Schemas
+
+**Vector Search Dataset:**
+```yaml
+version: 1
+metadata:
+  name: mnist
+  description: 'MNIST: 60,000 vectors, 784 dimensions'
+record:
+  fields:
+  - name: embedding
+    type: vector
+    dtype: float32
+    dimensions: 784
+sections:
+  records:
+    count: 60000
+  keys:
+    present: false
+    pattern: vec:{HASHTAG}:%012d
+  queries:
+    present: true
+    count: 10000
+  ground_truth:
+    present: true
+    neighbors_per_query: 100
+field_metadata:
+  embedding:
+    distance_metric: l2
+```
+
+**Key-Value Dataset:**
+```yaml
+version: 1
+metadata:
+  name: kv_3m
+  description: '3M SET commands'
+replay:
+  command: SET
+record:
+  fields:
+  - name: _arg0
+    type: blob
+    max_bytes: 500
+sections:
+  records:
+    count: 3000000
+  keys:
+    present: true
+    max_bytes: 32
+```
+
+**E-commerce Product Catalog:**
+```yaml
+version: 1
+metadata:
+  name: product_catalog
+  description: 'Product embeddings with metadata'
+replay:
+  command: HSET
+record:
+  fields:
+  - name: embedding
+    type: vector
+    dtype: float32
+    dimensions: 128
+  - name: category
+    type: tag
+    max_bytes: 32
+  - name: price
+    type: numeric
+    dtype: float64
+  - name: description
+    type: text
+    max_bytes: 256
+sections:
+  records:
+    count: 100000
+  keys:
+    present: true
+    max_bytes: 32
+field_metadata:
+  embedding:
+    distance_metric: cosine
+  category:
+    index_type: tag
+```
 
 ## Next Steps
 
+- **Example Datasets**: See [examples/](examples/) for sample datasets and Python scripts
 - **Running Benchmarks**: See [BENCHMARKING.md](BENCHMARKING.md)
 - **Advanced Features**: See [ADVANCED.md](ADVANCED.md) for metadata filtering
+- **Examples**: See [EXAMPLES.md](EXAMPLES.md) for comprehensive benchmark examples
 - **Installation**: See [INSTALLATION.md](INSTALLATION.md) for environment setup

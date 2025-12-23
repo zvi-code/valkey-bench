@@ -184,7 +184,8 @@ impl ParallelWorkload {
         keyspace: u64,
         data_size: usize,
         search_config: Option<&SearchConfig>,
-        dataset_path: Option<&std::path::PathBuf>,
+        schema_path: Option<&std::path::PathBuf>,
+        data_path: Option<&std::path::PathBuf>,
     ) {
         for comp in &mut self.components {
             // Apply defaults to each component's config
@@ -196,8 +197,11 @@ impl ParallelWorkload {
             if let Some(sc) = search_config {
                 comp.config.search_config = Some(sc.clone());
             }
-            if let Some(dp) = dataset_path {
-                comp.config.dataset_path = Some(dp.clone());
+            if let Some(sp) = schema_path {
+                comp.config.schema_path = Some(sp.clone());
+            }
+            if let Some(dp) = data_path {
+                comp.config.data_path = Some(dp.clone());
             }
         }
     }

@@ -356,30 +356,37 @@ def get_dataset(dataset_name: str, force: bool = False):
 def get_ann_benchmarks_dataset(name: str, info: Dict, output_bin: Path) -> bool:
     """Download and convert ANN-Benchmarks HDF5 dataset."""
     hdf5_path = DATASETS_DIR / f"{name}.hdf5"
-    
+
     # Download HDF5
     if not hdf5_path.exists():
         if not download_file(info["url"], hdf5_path, f"{name} HDF5"):
             return False
     else:
         print(f"✓ Using cached HDF5: {hdf5_path}")
-    
-    # Convert to binary using prepare_binary.py
-    print(f"\nConverting to Valkey binary format...")
-    prepare_binary = CONVERSION_DIR / "prepare_binary.py"
-    
+
+    # Convert to schema-driven format (YAML + bin)
+    print(f"\nConverting to schema-driven format...")
+    prepare_schema = CONVERSION_DIR / "prepare_schema_binary.py"
+
+    # Output base path (without extension)
+    output_base = output_bin.with_suffix('')
+
     cmd = [
-        PYTHON_CMD, str(prepare_binary),
+        PYTHON_CMD, str(prepare_schema),
+        "hdf5",
         str(hdf5_path),
-        str(output_bin),
-        "--metric", info["metric"],
+        str(output_base),
+        "--name", name,
+        "--metric", info["metric"].lower(),
         "--max-neighbors", "100"
     ]
-    
+
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         print(result.stdout)
-        print(f"✓ Dataset ready: {output_bin}")
+        print(f"✓ Dataset ready:")
+        print(f"    Schema: {output_base}.yaml")
+        print(f"    Data:   {output_base}.bin")
         return True
     except subprocess.CalledProcessError as e:
         print(f"✗ Conversion failed: {e}")
@@ -424,21 +431,26 @@ def get_vectordb_bench_dataset(name: str, info: Dict, output_bin: Path) -> bool:
         print(f"✗ Conversion to HDF5 failed: {e}")
         return False
     
-    # Convert HDF5 to binary
-    prepare_binary = CONVERSION_DIR / "prepare_binary.py"
-    
-    print(f"\nConverting to Valkey binary format...")
+    # Convert HDF5 to schema-driven format
+    prepare_schema = CONVERSION_DIR / "prepare_schema_binary.py"
+    output_base = output_bin.with_suffix('')
+
+    print(f"\nConverting to schema-driven format...")
     cmd = [
-        PYTHON_CMD, str(prepare_binary),
+        PYTHON_CMD, str(prepare_schema),
+        "hdf5",
         str(hdf5_path),
-        str(output_bin),
-        "--metric", info["metric"],
+        str(output_base),
+        "--name", name,
+        "--metric", info["metric"].lower(),
         "--max-neighbors", "100"
     ]
-    
+
     try:
         subprocess.run(cmd, check=True)
-        print(f"✓ Dataset ready: {output_bin}")
+        print(f"✓ Dataset ready:")
+        print(f"    Schema: {output_base}.yaml")
+        print(f"    Data:   {output_base}.bin")
         return True
     except subprocess.CalledProcessError as e:
         print(f"✗ Conversion failed: {e}")
@@ -462,73 +474,202 @@ def get_bigann_metadata_dataset(name: str, info: Dict, output_bin: Path) -> bool
 
 
 def create_dataset_symlink(dataset_name: str):
-    """Create a symlink in the local datasets directory pointing to the build directory."""
+    """Create symlinks in the local datasets directory for both YAML and bin files."""
     # Local datasets directory for symlinks
     local_datasets_dir = PROJECT_ROOT / "datasets"
     local_datasets_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Source file in build directory
-    source_bin = BUILD_DIR / f"{dataset_name}.bin"
-    
-    # Symlink in local datasets directory
-    symlink_path = local_datasets_dir / f"{dataset_name}.bin"
-    
-    # Skip symlink if source and target are the same path
-    if source_bin.resolve() == symlink_path.resolve() or source_bin == symlink_path:
-        # File is already in the right place, no symlink needed
-        return True
-    
-    # Remove existing symlink if it exists
-    if symlink_path.exists() or symlink_path.is_symlink():
-        symlink_path.unlink()
-    
-    # Create symlink
-    try:
-        symlink_path.symlink_to(source_bin)
-        print(f"✓ Created symlink: {symlink_path} -> {source_bin}")
-        return True
-    except Exception as e:
-        print(f"⚠ Warning: Could not create symlink: {e}")
-        return False
+
+    success = True
+    for ext in [".yaml", ".bin"]:
+        # Source file in build directory
+        source_file = BUILD_DIR / f"{dataset_name}{ext}"
+
+        # Symlink in local datasets directory
+        symlink_path = local_datasets_dir / f"{dataset_name}{ext}"
+
+        # Skip if source doesn't exist
+        if not source_file.exists():
+            continue
+
+        # Skip symlink if source and target are the same path
+        if source_file.resolve() == symlink_path.resolve() or source_file == symlink_path:
+            # File is already in the right place, no symlink needed
+            continue
+
+        # Remove existing symlink if it exists
+        if symlink_path.exists() or symlink_path.is_symlink():
+            symlink_path.unlink()
+
+        # Create symlink
+        try:
+            symlink_path.symlink_to(source_file)
+            print(f"✓ Created symlink: {symlink_path} -> {source_file}")
+        except Exception as e:
+            print(f"⚠ Warning: Could not create symlink: {e}")
+            success = False
+
+    return success
 
 
 def verify_dataset(bin_path: Path) -> bool:
-    """Verify a binary dataset file."""
+    """Verify a dataset file (schema-driven YAML+bin or legacy embedded header)."""
     if not bin_path.exists():
         print(f"✗ File not found: {bin_path}")
         return False
-    
+
+    # Check for schema-driven format (YAML file exists alongside bin)
+    yaml_path = bin_path.with_suffix('.yaml')
+    if yaml_path.exists():
+        return verify_schema_dataset(yaml_path, bin_path)
+
+    # Fall back to legacy format verification
+    return verify_legacy_dataset(bin_path)
+
+
+def verify_schema_dataset(yaml_path: Path, bin_path: Path) -> bool:
+    """Verify a schema-driven dataset (YAML + bin)."""
+    try:
+        import yaml as yaml_lib
+
+        with open(yaml_path) as f:
+            schema = yaml_lib.safe_load(f)
+
+        version = schema.get('version', 1)
+        metadata = schema.get('metadata', {})
+        record = schema.get('record', {})
+        sections = schema.get('sections', {})
+        field_metadata = schema.get('field_metadata', {})
+
+        name = metadata.get('name', 'unknown')
+        description = metadata.get('description', '')
+
+        records_count = sections.get('records', {}).get('count', 0)
+        queries = sections.get('queries', {})
+        ground_truth = sections.get('ground_truth', {})
+
+        # Find vector field
+        dim = 0
+        metric = 'l2'
+        for field in record.get('fields', []):
+            if field.get('type') == 'vector':
+                dim = field.get('dimensions', 0)
+                field_name = field.get('name', 'embedding')
+                fm = field_metadata.get(field_name, {})
+                metric = fm.get('distance_metric', 'l2')
+                break
+
+        print(f"✓ Valid schema-driven dataset: {bin_path.name}")
+        print(f"  Schema: {yaml_path.name}")
+        print(f"  Name: {name}")
+        print(f"  Vectors: {records_count:,}")
+        print(f"  Dimensions: {dim}")
+        print(f"  Metric: {metric.upper()}")
+
+        if queries.get('present'):
+            print(f"  Queries: {queries.get('count', 0):,}")
+        if ground_truth.get('present'):
+            print(f"  Ground Truth: {ground_truth.get('neighbors_per_query', 0)} neighbors/query")
+
+        # Verify binary file size
+        expected_size = compute_expected_size(schema)
+        actual_size = bin_path.stat().st_size
+        if actual_size >= expected_size:
+            print(f"  Binary size: {actual_size:,} bytes (expected >= {expected_size:,})")
+        else:
+            print(f"  ⚠ Binary size mismatch: {actual_size:,} bytes (expected >= {expected_size:,})")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Schema verification failed: {e}")
+        return False
+
+
+def compute_expected_size(schema: dict) -> int:
+    """Compute expected binary file size from schema."""
+    record = schema.get('record', {})
+    sections = schema.get('sections', {})
+
+    # Compute record size
+    record_size = 0
+    for field in record.get('fields', []):
+        ftype = field.get('type')
+        if ftype == 'vector':
+            dim = field.get('dimensions', 0)
+            dtype_size = {'float32': 4, 'float16': 2}.get(field.get('dtype', 'float32'), 4)
+            record_size += dim * dtype_size
+        elif ftype in ('text', 'tag', 'blob'):
+            record_size += field.get('max_bytes', 0)
+        elif ftype == 'numeric':
+            dtype_size = {'float64': 8, 'float32': 4, 'int64': 8, 'int32': 4}.get(
+                field.get('dtype', 'float64'), 8)
+            record_size += dtype_size
+
+    num_records = sections.get('records', {}).get('count', 0)
+    total = num_records * record_size
+
+    # Keys section
+    keys = sections.get('keys', {})
+    if keys.get('present'):
+        total += num_records * keys.get('max_bytes', 64)
+
+    # Queries section (same as records but only query fields)
+    queries = sections.get('queries', {})
+    if queries.get('present'):
+        query_count = queries.get('count', 0)
+        # Queries typically contain just the vector field
+        for field in record.get('fields', []):
+            if field.get('type') == 'vector':
+                dim = field.get('dimensions', 0)
+                dtype_size = 4  # float32
+                total += query_count * dim * dtype_size
+                break
+
+    # Ground truth section
+    gt = sections.get('ground_truth', {})
+    if gt.get('present'):
+        query_count = queries.get('count', 0)
+        neighbors = gt.get('neighbors_per_query', 100)
+        id_size = 8 if gt.get('id_type', 'u64') == 'u64' else 4
+        total += query_count * neighbors * id_size
+
+    return total
+
+
+def verify_legacy_dataset(bin_path: Path) -> bool:
+    """Verify a legacy binary dataset file with embedded header."""
     try:
         with open(bin_path, 'rb') as f:
             # Read header
             magic = struct.unpack('<I', f.read(4))[0]
             version = struct.unpack('<I', f.read(4))[0]
-            
+
             if magic != DATASET_MAGIC:
                 print(f"✗ Invalid magic number: {hex(magic)} (expected {hex(DATASET_MAGIC)})")
+                print(f"  This may be a schema-driven dataset - check for {bin_path.stem}.yaml")
                 return False
-            
+
             if version not in [DATASET_VERSION_1, DATASET_VERSION_2]:
                 print(f"✗ Invalid version: {version}")
                 return False
-            
+
             num_vectors = struct.unpack('<Q', f.read(8))[0]
             num_queries = struct.unpack('<Q', f.read(8))[0]
             dim = struct.unpack('<I', f.read(4))[0]
             num_neighbors = struct.unpack('<I', f.read(4))[0]
             metric = struct.unpack('<B', f.read(1))[0]
-            
+
             metric_names = {0: "L2", 1: "IP", 2: "COSINE"}
             metric_str = metric_names.get(metric, f"Unknown({metric})")
-            
-            print(f"✓ Valid dataset: {bin_path.name}")
-            print(f"  Version: {version}")
+
+            print(f"✓ Valid legacy dataset: {bin_path.name}")
+            print(f"  Format: Embedded header (v{version})")
             print(f"  Vectors: {num_vectors:,}")
             print(f"  Queries: {num_queries:,}")
             print(f"  Dimensions: {dim}")
             print(f"  Neighbors: {num_neighbors}")
             print(f"  Metric: {metric_str}")
-            
+
             if version == DATASET_VERSION_2:
                 # Read metadata flag
                 f.seek(29)  # Skip to has_metadata field
@@ -536,9 +677,9 @@ def verify_dataset(bin_path: Path) -> bool:
                 if has_metadata:
                     vocab_size = struct.unpack('<I', f.read(4))[0]
                     print(f"  Metadata: Yes (vocabulary size: {vocab_size:,})")
-            
+
             return True
-            
+
     except Exception as e:
         print(f"✗ Verification failed: {e}")
         return False
@@ -578,13 +719,15 @@ def main():
         success = verify_dataset(Path(args.file))
         sys.exit(0 if success else 1)
     elif args.command == "convert":
-        # Call prepare_binary.py
-        prepare_binary = CONVERSION_DIR / "prepare_binary.py"
+        # Call prepare_schema_binary.py
+        prepare_schema = CONVERSION_DIR / "prepare_schema_binary.py"
+        output_base = Path(args.output).with_suffix('')
         cmd = [
-            PYTHON_CMD, str(prepare_binary),
+            PYTHON_CMD, str(prepare_schema),
+            "hdf5",
             args.input,
-            args.output,
-            "--metric", args.metric,
+            str(output_base),
+            "--metric", args.metric.lower(),
             "--max-neighbors", "100"
         ]
         result = subprocess.run(cmd)

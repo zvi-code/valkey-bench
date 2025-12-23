@@ -1,0 +1,19 @@
+version: 1
+metadata:
+  name: kv_test
+  description: 'Recorded dataset: 10000 SET commands'
+replay:
+  command: SET
+record:
+  fields:
+  - name: _arg0
+    type: blob
+    max_bytes: 100
+sections:
+  records:
+    count: 10000
+  keys:
+    present: true
+    encoding: utf8
+    length: fixed
+    max_bytes: 32
