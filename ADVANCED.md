@@ -137,7 +137,7 @@ Config: {clients=275, threads=24}
 qps: 1041234.56
 
 === Recommended Command Line ===
-./target/release/valkey-bench-rs -h cluster-node --cluster -t get -c 275 --threads 24 -n 1000000
+./target/release/valkey-bench-rs -h $HOST --cluster -t get -c 275 --threads 24 -n 1000000
 ```
 
 ---
@@ -194,7 +194,7 @@ Special dataset with rich metadata:
 
 ```bash
 # Load vectors with tag distribution
-./target/release/valkey-bench-rs -h localhost --cluster -t vec-load \
+./target/release/valkey-bench-rs -h $HOST --cluster -t vec-load \
   --dataset datasets/vectors.bin \
   --search-prefix "doc:" \
   --search-index myindex \
@@ -211,7 +211,7 @@ Special dataset with rich metadata:
 
 ```bash
 # Single tag filter
-./target/release/valkey-bench-rs -h localhost --cluster -t vec-query \
+./target/release/valkey-bench-rs -h $HOST --cluster -t vec-query \
   --dataset datasets/vectors.bin \
   --search-index myindex \
   --tag-field category \
@@ -219,7 +219,7 @@ Special dataset with rich metadata:
   -k 10 -n 10000
 
 # Multiple tags (OR condition)
-./target/release/valkey-bench-rs -h localhost --cluster -t vec-query \
+./target/release/valkey-bench-rs -h $HOST --cluster -t vec-query \
   --dataset datasets/vectors.bin \
   --search-index myindex \
   --tag-field category \
@@ -232,7 +232,7 @@ Special dataset with rich metadata:
 #### Loading with Numeric Fields
 
 ```bash
-./target/release/valkey-bench-rs -h localhost --cluster -t vec-load \
+./target/release/valkey-bench-rs -h $HOST --cluster -t vec-load \
   --dataset datasets/vectors.bin \
   --search-index myindex \
   --tag-field category \

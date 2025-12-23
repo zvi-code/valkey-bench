@@ -1407,6 +1407,120 @@ impl Orchestrator {
         })
     }
 
+    /// Apply runtime configuration to all nodes
+    ///
+    /// Parses the configuration file and applies all settings via CONFIG SET
+    /// to all cluster nodes (or the standalone node).
+    ///
+    /// # Arguments
+    /// * `config_path` - Path to the configuration file
+    ///
+    /// # Returns
+    /// The number of configurations successfully applied across all nodes
+    pub fn apply_runtime_config(&self, config_path: &Path) -> Result<usize> {
+        use crate::config::{RuntimeConfig, RuntimeConfigManager};
+
+        // Parse the configuration file
+        let runtime_config = RuntimeConfig::from_file(config_path).map_err(|e| {
+            crate::utils::BenchmarkError::Config(format!(
+                "Failed to read runtime config '{}': {}",
+                config_path.display(),
+                e
+            ))
+        })?;
+
+        if runtime_config.is_empty() {
+            if !self.config.quiet {
+                info!("Runtime config file is empty, nothing to apply");
+            }
+            return Ok(0);
+        }
+
+        // Get seed addresses for standalone mode
+        let seed_addresses: Vec<(String, u16)> = self.config
+            .addresses
+            .iter()
+            .map(|a| (a.host.clone(), a.port))
+            .collect();
+
+        // Create config manager and apply
+        let manager = RuntimeConfigManager::new(
+            &runtime_config,
+            &self.connection_factory,
+            self.config.quiet,
+        );
+
+        let results = manager.apply_all(self.cluster_topology.as_ref(), &seed_addresses);
+
+        // Count total successful applications
+        let total_applied: usize = results.iter().map(|r| r.applied.len()).sum();
+        let total_failed: usize = results.iter().map(|r| r.failed.len()).sum();
+
+        if total_failed > 0 {
+            return Err(crate::utils::BenchmarkError::Config(format!(
+                "Failed to apply {} configuration(s)",
+                total_failed
+            )));
+        }
+
+        if !self.config.quiet {
+            info!("Successfully applied {} runtime configuration(s)", total_applied);
+        }
+
+        Ok(total_applied)
+    }
+
+    /// Verify runtime configuration on all nodes
+    ///
+    /// Checks that all configurations in the file match the current server values.
+    ///
+    /// # Arguments
+    /// * `config_path` - Path to the configuration file
+    ///
+    /// # Returns
+    /// True if all configurations match on all nodes
+    pub fn verify_runtime_config(&self, config_path: &Path) -> Result<bool> {
+        use crate::config::{RuntimeConfig, RuntimeConfigManager};
+
+        // Parse the configuration file
+        let runtime_config = RuntimeConfig::from_file(config_path).map_err(|e| {
+            crate::utils::BenchmarkError::Config(format!(
+                "Failed to read runtime config '{}': {}",
+                config_path.display(),
+                e
+            ))
+        })?;
+
+        if runtime_config.is_empty() {
+            return Ok(true);
+        }
+
+        // Get seed addresses for standalone mode
+        let seed_addresses: Vec<(String, u16)> = self.config
+            .addresses
+            .iter()
+            .map(|a| (a.host.clone(), a.port))
+            .collect();
+
+        // Create config manager and verify
+        let manager = RuntimeConfigManager::new(
+            &runtime_config,
+            &self.connection_factory,
+            self.config.quiet,
+        );
+
+        let results = manager.verify_all(self.cluster_topology.as_ref(), &seed_addresses);
+
+        // Check if all nodes verified successfully
+        let all_success = results.iter().all(|r| r.is_success());
+
+        if all_success && !self.config.quiet {
+            info!("All runtime configurations verified successfully");
+        }
+
+        Ok(all_success)
+    }
+
     /// Export results to CSV file
     pub fn export_csv(&self, results: &[BenchmarkResult], path: &Path) -> Result<()> {
         use std::fs::File;

@@ -24,7 +24,7 @@ dataset.bin   # Raw binary data (vectors, keys, values)
 
 **Usage:**
 ```bash
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema datasets/mnist.yaml \
   --data datasets/mnist.bin \
   -t vec-load -n 60000 -c 100
@@ -39,7 +39,7 @@ dataset.bin  # Header + vectors + queries + ground truth
 
 **Usage:**
 ```bash
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --dataset datasets/legacy.bin \
   -t vec-load -n 60000 -c 100
 ```
@@ -459,7 +459,7 @@ rec.generate("datasets/my_kv")
 
 **Usage:**
 ```bash
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema datasets/my_products.yaml \
   --data datasets/my_products.bin \
   -t vec-load -n 10000 -c 50

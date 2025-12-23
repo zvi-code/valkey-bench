@@ -84,12 +84,12 @@ def create_kv_dataset(output_base: Path, num_keys: int, value_size: int,
     print()
     print(f"Usage:")
     print(f"  # Load data into cluster")
-    print(f"  ./target/release/valkey-bench-rs -h HOST --cluster \\")
+    print(f"  ./target/release/valkey-bench-rs -h $HOST --cluster \\")
     print(f"    --schema {schema_path} --data {data_path} \\")
     print(f"    -t set -n {num_keys} -c 100 --threads 16")
     print()
     print(f"  # Run GET benchmark (uses same keyspace)")
-    print(f"  ./target/release/valkey-bench-rs -h HOST --cluster \\")
+    print(f"  ./target/release/valkey-bench-rs -h $HOST --cluster \\")
     print(f"    -t get -n {num_keys} -r {num_keys} -c 500 --threads 52")
 
     return schema_path, data_path

@@ -101,10 +101,10 @@ This creates three test datasets:
 
 ```bash
 # Test connectivity (replace with your server address)
-./target/release/valkey-bench-rs -h localhost -p 6379 -t ping -n 1000 -q
+./target/release/valkey-bench-rs -h $HOST -p 6379 -t ping -n 1000 -q
 
 # Run vector benchmark with schema-driven dataset
-./target/release/valkey-bench-rs -h localhost -p 6379 \
+./target/release/valkey-bench-rs -h $HOST -p 6379 \
   --schema datasets/test_small.yaml \
   --data datasets/test_small.bin \
   --search-index test-idx \
@@ -112,7 +112,7 @@ This creates three test datasets:
   -t vec-load -n 100
 
 # Run vector query benchmark
-./target/release/valkey-bench-rs -h localhost -p 6379 \
+./target/release/valkey-bench-rs -h $HOST -p 6379 \
   --schema datasets/test_small.yaml \
   --data datasets/test_small.bin \
   --search-index test-idx \
@@ -261,13 +261,13 @@ cargo clean && cargo build --release
 **Connection refused**
 ```bash
 # Test basic connectivity
-./target/release/valkey-bench-rs --cli -h localhost PING
+./target/release/valkey-bench-rs --cli -h $HOST PING
 ```
 
 **TLS certificate errors**
 ```bash
 # Skip verification for testing
-./target/release/valkey-bench-rs --tls --tls-skip-verify -h HOST PING
+./target/release/valkey-bench-rs --tls --tls-skip-verify -h $HOST PING
 ```
 
 ### Python Issues

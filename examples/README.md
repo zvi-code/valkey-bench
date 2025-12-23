@@ -30,13 +30,13 @@ This folder contains sample datasets demonstrating the schema-driven dataset for
 
 ```bash
 # Load vectors using schema + data files
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema examples/test_small.yaml \
   --data examples/test_small.bin \
   -t vec-load -n 100 -c 10
 
 # Query vectors (uses query section from schema)
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema examples/test_small.yaml \
   --data examples/test_small.bin \
   -t vec-query -n 10 -c 10 --search-index test_idx
@@ -46,20 +46,20 @@ This folder contains sample datasets demonstrating the schema-driven dataset for
 
 ```bash
 # Load product catalog with embeddings, categories, and prices
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema examples/product_catalog.yaml \
   --data examples/product_catalog.bin \
   -t vec-load -n 100 -c 10 --search-index products
 
 # Create the index (required for filtered search)
-./target/release/valkey-bench-rs --cli -h HOST \
+./target/release/valkey-bench-rs --cli -h $HOST \
   "FT.CREATE products ON HASH PREFIX 1 product: SCHEMA \
    embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 128 DISTANCE_METRIC COSINE \
    category TAG \
    price NUMERIC"
 
 # Query with tag filter
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema examples/product_catalog.yaml \
   --data examples/product_catalog.bin \
   -t vec-query --search-index products \
@@ -71,13 +71,13 @@ This folder contains sample datasets demonstrating the schema-driven dataset for
 
 ```bash
 # Load key-value pairs using recorded dataset
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   --schema examples/kv_test.yaml \
   --data examples/kv_test.bin \
   -t set -n 10000 -c 50
 
 # Run GET benchmark on same keyspace
-./target/release/valkey-bench-rs -h HOST --cluster \
+./target/release/valkey-bench-rs -h $HOST --cluster \
   -t get -n 10000 -r 10000 -c 100
 ```
 

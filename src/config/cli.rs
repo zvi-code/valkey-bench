@@ -380,6 +380,20 @@ pub struct CliArgs {
     #[arg(long = "request-timeout", default_value_t = 30000)]
     pub request_timeout_ms: u64,
 
+    // ===== Runtime Configuration =====
+    /// Path to runtime configuration file (applied via CONFIG SET before benchmark)
+    ///
+    /// The config file uses a simple key-value format compatible with valkey.conf:
+    ///   # Comments start with #
+    ///   io-threads 8
+    ///   maxmemory 10gb
+    ///   save ""
+    ///
+    /// All configurations are applied to all cluster nodes after discovery.
+    /// Only mutable/modifiable parameters can be set at runtime.
+    #[arg(long = "runtime-config")]
+    pub runtime_config: Option<PathBuf>,
+
     // ===== Advanced Options =====
     /// Drop existing index before creating new one
     #[arg(long = "dropindex")]

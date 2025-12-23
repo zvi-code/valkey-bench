@@ -135,6 +135,11 @@ fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseL
         }
     }
 
+    // Runtime configuration
+    if let Some(ref runtime_config_path) = config.runtime_config_path {
+        println!("Runtime config: {}", runtime_config_path.display());
+    }
+
     println!("============================================================\n");
 }
 
@@ -556,6 +561,18 @@ fn run() -> Result<()> {
 
     // Create orchestrator
     let mut orchestrator = Orchestrator::new(config.clone())?;
+
+    // Apply runtime configuration if specified (after cluster discovery, before benchmarks)
+    if let Some(ref runtime_config_path) = config.runtime_config_path {
+        info!("Applying runtime configuration from: {:?}", runtime_config_path);
+        orchestrator.apply_runtime_config(runtime_config_path)?;
+
+        // Verify the configuration was applied correctly
+        let verified = orchestrator.verify_runtime_config(runtime_config_path)?;
+        if !verified {
+            warn!("Some runtime configurations could not be verified");
+        }
+    }
 
     // Measure base latency (single-client PING and GET miss)
     let base_latency = if !config.quiet {

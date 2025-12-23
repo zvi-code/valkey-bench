@@ -99,6 +99,9 @@ pub struct BenchmarkConfig {
     pub dropindex: bool,
     pub skip_load: bool,
     pub cleanup: bool,
+
+    // Runtime configuration
+    pub runtime_config_path: Option<PathBuf>,
 }
 
 impl BenchmarkConfig {
@@ -220,6 +223,8 @@ impl BenchmarkConfig {
             dropindex: args.dropindex,
             skip_load: args.skip_load,
             cleanup: args.cleanup,
+
+            runtime_config_path: args.runtime_config.clone(),
         })
     }
 

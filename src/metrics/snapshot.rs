@@ -364,55 +364,82 @@ pub fn compare_snapshots(
             let old_field = old.fields.get(&field_key);
             let new_field = new.fields.get(&field_key);
 
-            if let (Some(old_f), Some(new_f)) = (old_field, new_field) {
-                if !old_f.valid || !new_f.valid {
-                    continue;
-                }
-
-                let old_value = old_f.value.value;
-                let new_value = new_f.value.value;
-                let delta = new_value - old_value;
-
-                let rate = if field.diff_type != DiffType::None {
-                    calculate_diff(old_value, new_value, elapsed_secs, field.diff_type)
-                } else {
-                    None
-                };
-
-                // Compute per-node deltas if both snapshots have per-node values
-                let per_node_deltas = if field.track_per_node {
-                    match (&old_f.per_node_values, &new_f.per_node_values) {
-                        (Some(old_nodes), Some(new_nodes)) => {
-                            let mut deltas = Vec::new();
-                            // Build map of old values
-                            let old_map: std::collections::HashMap<&str, i64> = old_nodes
-                                .iter()
-                                .map(|(k, v)| (k.as_str(), *v))
-                                .collect();
-
-                            for (node_id, new_val) in new_nodes {
-                                let old_val = *old_map.get(node_id.as_str()).unwrap_or(&0);
-                                deltas.push((node_id.clone(), old_val, *new_val, *new_val - old_val));
-                            }
-                            Some(deltas)
-                        }
-                        _ => None,
+            // Handle cases where field exists in new snapshot but not old
+            // (e.g., cmdstat for a command that wasn't called before benchmark)
+            let (old_value, new_value, old_per_node, new_per_node) = match (old_field, new_field) {
+                (Some(old_f), Some(new_f)) => {
+                    if !old_f.valid || !new_f.valid {
+                        continue;
                     }
-                } else {
-                    None
-                };
+                    (old_f.value.value, new_f.value.value,
+                     old_f.per_node_values.as_ref(), new_f.per_node_values.as_ref())
+                }
+                (None, Some(new_f)) => {
+                    // Field only in new snapshot - use 0 as baseline
+                    if !new_f.valid {
+                        continue;
+                    }
+                    (0, new_f.value.value, None, new_f.per_node_values.as_ref())
+                }
+                (Some(old_f), None) => {
+                    // Field only in old snapshot - value went to 0 (unlikely but handle it)
+                    if !old_f.valid {
+                        continue;
+                    }
+                    (old_f.value.value, 0, old_f.per_node_values.as_ref(), None)
+                }
+                (None, None) => continue,
+            };
 
-                field_diffs.push(FieldDiff {
-                    field_name: field_key,
-                    old_value,
-                    new_value,
-                    delta,
-                    rate,
-                    display_format: field.display_format,
-                    diff_type: field.diff_type,
-                    per_node_deltas,
-                });
-            }
+            let delta = new_value - old_value;
+
+            let rate = if field.diff_type != DiffType::None {
+                calculate_diff(old_value, new_value, elapsed_secs, field.diff_type)
+            } else {
+                None
+            };
+
+            // Compute per-node deltas
+            let per_node_deltas = if field.track_per_node {
+                match (old_per_node, new_per_node) {
+                    (Some(old_nodes), Some(new_nodes)) => {
+                        let mut deltas = Vec::new();
+                        // Build map of old values
+                        let old_map: std::collections::HashMap<&str, i64> = old_nodes
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), *v))
+                            .collect();
+
+                        for (node_id, new_val) in new_nodes {
+                            let old_val = *old_map.get(node_id.as_str()).unwrap_or(&0);
+                            deltas.push((node_id.clone(), old_val, *new_val, *new_val - old_val));
+                        }
+                        Some(deltas)
+                    }
+                    (None, Some(new_nodes)) => {
+                        // Field only in new snapshot - all deltas equal new values
+                        let deltas: Vec<_> = new_nodes
+                            .iter()
+                            .map(|(node_id, new_val)| (node_id.clone(), 0, *new_val, *new_val))
+                            .collect();
+                        Some(deltas)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            field_diffs.push(FieldDiff {
+                field_name: field_key,
+                old_value,
+                new_value,
+                delta,
+                rate,
+                display_format: field.display_format,
+                diff_type: field.diff_type,
+                per_node_deltas,
+            });
         }
     }
 
@@ -657,7 +684,7 @@ pub fn print_per_node_matrix(diff: &SnapshotDiff, topology: Option<&crate::clust
     }
 
     // Collect fields that have per-node data with non-zero deltas
-    let fields_with_nodes: Vec<&FieldDiff> = diff
+    let mut fields_with_nodes: Vec<&FieldDiff> = diff
         .fields
         .iter()
         .filter(|f| {
@@ -672,6 +699,9 @@ pub fn print_per_node_matrix(diff: &SnapshotDiff, topology: Option<&crate::clust
     if fields_with_nodes.is_empty() {
         return;
     }
+
+    // Sort fields by name so related metrics (e.g., cmdstat_incr:calls and cmdstat_incr:usec) appear together
+    fields_with_nodes.sort_by(|a, b| a.field_name.cmp(&b.field_name));
 
     // Collect unique node IDs from all fields (preserving order)
     let mut node_ids: Vec<String> = Vec::new();

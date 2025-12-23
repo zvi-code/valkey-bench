@@ -17,7 +17,7 @@ The recommended approach uses schema-driven datasets (YAML schema + binary data)
 ```bash
 # Step 1: Load vectors using schema + data files
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   --schema datasets/mnist.yaml \
   --data datasets/mnist.bin \
   -t vec-load \
@@ -26,7 +26,7 @@ The recommended approach uses schema-driven datasets (YAML schema + binary data)
 
 # Step 2: Run query benchmark with automatic recall computation
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   --schema datasets/mnist.yaml \
   --data datasets/mnist.bin \
   -t vec-query \
@@ -41,7 +41,7 @@ For datasets in legacy binary format (single file with embedded header):
 ```bash
 # Step 1: Load all vectors into Valkey
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   --dataset datasets/cohere-medium-1m.bin \
   -t vec-load \
   --search-index cohere_1m --search-prefix zvec_: \
@@ -49,7 +49,7 @@ For datasets in legacy binary format (single file with embedded header):
 
 # Step 2: Run query benchmark
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   --dataset datasets/cohere-medium-1m.bin \
   -t vec-query \
   --search-index cohere_1m --search-prefix zvec_: \
@@ -63,14 +63,14 @@ Run GET/SET benchmarks with pre-recorded datasets:
 ```bash
 # Load 3M keys with 500-byte values from recorded dataset
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   --schema datasets/kv_3m.yaml \
   --data datasets/kv_3m.bin \
   -t set -n 3000000 -c 200 --threads 16
 
 # Run GET benchmark on same keyspace
 ./target/release/valkey-bench-rs \
-  -h localhost --cluster \
+  -h $HOST --cluster \
   -t get -n 3000000 -r 3000000 -c 500 --threads 52
 ```
 
@@ -93,7 +93,7 @@ This creates:
 
 ```bash
 ./target/release/valkey-bench-rs \
-  -h YOUR_CLUSTER_HOST --cluster \
+  -h $HOST --cluster \
   --schema datasets/cohere-large-10m.yaml \
   --data datasets/cohere-large-10m.bin \
   -t vec-load \
@@ -111,7 +111,7 @@ The tool reads from the schema:
 
 ```bash
 ./target/release/valkey-bench-rs \
-  -h YOUR_CLUSTER_HOST --cluster \
+  -h $HOST --cluster \
   --schema datasets/cohere-large-10m.yaml \
   --data datasets/cohere-large-10m.bin \
   -t vec-query \
@@ -142,7 +142,7 @@ Increase `--ef-search` to improve recall at the cost of latency:
 ```bash
 # Higher recall (~95%+)
 ./target/release/valkey-bench-rs \
-  -h YOUR_CLUSTER_HOST --cluster \
+  -h $HOST --cluster \
   --schema datasets/cohere-large-10m.yaml \
   --data datasets/cohere-large-10m.bin \
   -t vec-query \
@@ -327,7 +327,7 @@ The optimizer automatically finds the best configuration for your objective.
   --dataset datasets/cohere-medium-1m.bin \
   -t vec-query \
   --search-index cohere_1m \
-  -h localhost --cluster
+  -h $HOST --cluster
 ```
 
 **What the optimizer does:**
@@ -356,22 +356,22 @@ The optimizer automatically finds the best configuration for your objective.
 
 ```bash
 # Maximize QPS for GET workload
-./target/release/valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
+./target/release/valkey-bench-rs -h $HOST --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps" \
   --tune "clients:10:300:10" --tune "threads:1:32:1"
 
 # Maximize QPS with p99 latency constraint
-./target/release/valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
+./target/release/valkey-bench-rs -h $HOST --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps" --constraint "p99_ms:lt:1.0" \
   --tune "clients:10:200:10" --tune "threads:1:16:1"
 
 # Multi-objective: maximize QPS, tiebreak on lowest p99
-./target/release/valkey-bench-rs -h cluster-node --cluster -t get -n 100000 \
+./target/release/valkey-bench-rs -h $HOST --cluster -t get -n 100000 \
   --optimize --objective "maximize:qps,minimize:p99_ms" --tolerance 0.04 \
   --tune "clients:10:300:10" --tune "threads:1:32:1"
 
 # Vector search: maximize QPS with recall above 95%
-./target/release/valkey-bench-rs -h cluster-node --cluster -t vec-query \
+./target/release/valkey-bench-rs -h $HOST --cluster -t vec-query \
   --dataset vectors.bin --search-index idx -n 100000 \
   --optimize --objective "maximize:qps" --constraint "recall:gt:0.95" \
   --tune "ef_search:10:500:10" --tune "clients:10:100:10"
@@ -516,13 +516,13 @@ For datasets with metadata (like YFCC-10M):
 **Solutions:**
 ```bash
 # Verify server is running
-./target/release/valkey-bench-rs --cli -h localhost PING
+./target/release/valkey-bench-rs --cli -h $HOST PING
 
 # Check cluster status
-./target/release/valkey-bench-rs --cli -h localhost CLUSTER INFO
+./target/release/valkey-bench-rs --cli -h $HOST CLUSTER INFO
 
 # Test basic connectivity
-./target/release/valkey-bench-rs -h localhost -t ping -n 1000
+./target/release/valkey-bench-rs -h $HOST -t ping -n 1000
 ```
 
 ### Memory Issues
