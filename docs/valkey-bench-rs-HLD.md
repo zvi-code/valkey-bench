@@ -652,4 +652,3 @@ src/
 - [README.md](README.md) - User documentation and CLI reference
 - [EXAMPLES.md](EXAMPLES.md) - Comprehensive usage examples
 - [valkey-bench-rs-rust-LLD.md](valkey-bench-rs-rust-LLD.md) - Low-Level Design with implementation details
-- [../CLAUDE.md](../CLAUDE.md) - Developer guide for contributing
