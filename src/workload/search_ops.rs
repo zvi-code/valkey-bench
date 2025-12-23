@@ -318,18 +318,27 @@ pub fn wait_for_indexing(
 }
 
 /// Parse FT.SEARCH response to extract document IDs
+///
+/// Handles both response formats:
+/// - Without NOCONTENT: [count, docID1, [fields...], docID2, [fields...], ...]
+/// - With NOCONTENT: [count, docID1, docID2, docID3, ...]
 pub fn parse_search_response(response: &RespValue) -> Vec<String> {
     let mut doc_ids = Vec::new();
 
     if let RespValue::Array(arr) = response {
-        // First element is total count, then alternating doc_id and fields
+        // First element is total count
         let mut i = 1;
         while i < arr.len() {
             if let RespValue::BulkString(doc_id) = &arr[i] {
                 doc_ids.push(String::from_utf8_lossy(doc_id).to_string());
             }
-            // Skip to next doc_id (skip over fields array if present)
-            i += 2;
+            i += 1;
+            // Skip fields array if present (when NOCONTENT is not used)
+            if i < arr.len() {
+                if let RespValue::Array(_) = &arr[i] {
+                    i += 1;
+                }
+            }
         }
     }
 
@@ -349,6 +358,56 @@ pub fn extract_numeric_ids(doc_ids: &[String], prefix: &str) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_search_response_nocontent() {
+        // NOCONTENT format: [count, docID1, docID2, ...]
+        let response = RespValue::Array(vec![
+            RespValue::Integer(3), // total count
+            RespValue::BulkString(b"vec:000000000001".to_vec()),
+            RespValue::BulkString(b"vec:000000000002".to_vec()),
+            RespValue::BulkString(b"vec:000000000003".to_vec()),
+        ]);
+
+        let doc_ids = parse_search_response(&response);
+        assert_eq!(doc_ids.len(), 3);
+        assert_eq!(doc_ids[0], "vec:000000000001");
+        assert_eq!(doc_ids[1], "vec:000000000002");
+        assert_eq!(doc_ids[2], "vec:000000000003");
+    }
+
+    #[test]
+    fn test_parse_search_response_with_fields() {
+        // Non-NOCONTENT format: [count, docID1, [fields...], docID2, [fields...], ...]
+        let response = RespValue::Array(vec![
+            RespValue::Integer(2), // total count
+            RespValue::BulkString(b"vec:000000000001".to_vec()),
+            RespValue::Array(vec![
+                RespValue::BulkString(b"field1".to_vec()),
+                RespValue::BulkString(b"value1".to_vec()),
+            ]),
+            RespValue::BulkString(b"vec:000000000002".to_vec()),
+            RespValue::Array(vec![
+                RespValue::BulkString(b"field1".to_vec()),
+                RespValue::BulkString(b"value2".to_vec()),
+            ]),
+        ]);
+
+        let doc_ids = parse_search_response(&response);
+        assert_eq!(doc_ids.len(), 2);
+        assert_eq!(doc_ids[0], "vec:000000000001");
+        assert_eq!(doc_ids[1], "vec:000000000002");
+    }
+
+    #[test]
+    fn test_parse_search_response_empty() {
+        let response = RespValue::Array(vec![
+            RespValue::Integer(0), // total count = 0
+        ]);
+
+        let doc_ids = parse_search_response(&response);
+        assert!(doc_ids.is_empty());
+    }
 
     #[test]
     fn test_extract_numeric_ids() {
