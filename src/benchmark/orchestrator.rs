@@ -27,7 +27,7 @@ use crate::metrics::{BackfillWaitConfig, EngineType, MetricsCollector, MetricsRe
 use crate::utils::Result;
 use crate::workload::{
     create_index, create_template, create_workload_context_with_iteration, drop_index, get_index_info,
-    NumericFieldSet, ParallelWorkload, SimpleContext, Workload, WorkloadType,
+    index_exists, NumericFieldSet, ParallelWorkload, SimpleContext, Workload, WorkloadType,
 };
 
 /// Keyspace hit/miss statistics from INFO stats
@@ -1263,6 +1263,27 @@ impl Orchestrator {
 
         info!("Index '{}' dropped", search_config.index_name);
         Ok(())
+    }
+
+    /// Check if vector search index exists
+    pub fn search_index_exists(&self) -> bool {
+        let search_config = match self.config.search_config.as_ref() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let addresses = self.get_benchmark_addresses();
+        if addresses.is_empty() {
+            return false;
+        }
+
+        let (host, port) = &addresses[0];
+        let mut conn = match self.connection_factory.create(host, *port) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        index_exists(&mut conn, &search_config.index_name)
     }
 
     /// Wait for index background indexing to complete

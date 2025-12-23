@@ -292,6 +292,11 @@ impl SearchConfig {
         self.dim = dim;
     }
 
+    /// Update distance metric
+    pub fn set_distance_metric(&mut self, metric: DistanceMetric) {
+        self.distance_metric = metric;
+    }
+
     /// Get vector byte length (dim * sizeof(f32))
     pub fn vec_byte_len(&self) -> usize {
         self.dim as usize * std::mem::size_of::<f32>()

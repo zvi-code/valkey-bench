@@ -33,8 +33,8 @@ pub use key_format::{
     DEFAULT_KEY_WIDTH, TAG_KEY_SEPARATOR,
 };
 pub use search_ops::{
-    create_index, drop_index, extract_numeric_ids, get_index_info, parse_search_response,
-    wait_for_indexing, IndexInfo,
+    create_index, drop_index, extract_numeric_ids, get_index_info, index_exists,
+    parse_search_response, wait_for_indexing, IndexInfo,
 };
 pub use numeric_field::{NumericDistribution, NumericFieldConfig, NumericFieldSet, NumericValueType};
 pub use tag_distribution::{TagDistribution, TagDistributionSet};

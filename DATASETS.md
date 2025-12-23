@@ -44,6 +44,17 @@ dataset.bin  # Header + vectors + queries + ground truth
   -t vec-load -n 60000 -c 100
 ```
 
+## Prerequisites
+
+Before downloading datasets, set up the Python environment:
+
+```bash
+# Run the prereq script (one-time setup)
+./prep_datasets/prereq-vectordbbench.sh
+```
+
+This installs VectorDBBench and dataset conversion dependencies in a virtual environment.
+
 ## Quick Start
 
 ### Using the Unified Dataset Manager (Recommended)

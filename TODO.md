@@ -52,6 +52,49 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 
 ## Planned - Core Features
 
+### YAML Workload Definition
+**Status:** Planned
+**Priority:** High
+**Proposal:** [docs/PROPOSAL-yaml-workload.md](docs/PROPOSAL-yaml-workload.md)
+**Description:** Define complete multi-stage benchmark workloads via YAML files with hierarchical structure: Application > Stages > Commands.
+
+**Key Features:**
+- Application-level settings (clients, threads, rfr)
+- Named data sources (generated KV data or dataset references)
+- Sequential stages with parallel command execution
+- Per-command configuration (iteration, pipeline, search params, filters)
+
+**Example:**
+```yaml
+application:
+  name: kv_progressive
+  clients: 100
+  threads: 16
+  data_sources:
+    kv_data:
+      type: generated
+      keyspace: 10000000
+      value_size: 100
+  stages:
+    - name: prefill
+      commands:
+        - type: set
+          data: kv_data
+          iteration: sequential
+      requests: 10000000
+    - name: mixed
+      requests: 1000000
+      commands:
+        - type: set
+          ratio: 20
+        - type: get
+          ratio: 80
+```
+
+**CLI:** `--workload workloads/benchmark.yaml`
+**Effort:** ~8 hours
+**Benefits:** Readable, version-controllable, reusable benchmark definitions.
+
 ### Per-Workload Configuration File Support
 **Status:** Planned (Foundation complete)
 **Description:** Extend per-workload configuration to support complex scenarios via external config files (YAML/TOML).
@@ -62,21 +105,7 @@ This document tracks planned enhancements and feature ideas for the valkey-searc
 - `apply_defaults()` propagates global CLI settings
 - Simple CLI: `--parallel "get:0.8,set:0.2"` and `--composite "vec-load:10000,vec-query:1000"`
 
-**Future Extension:** Add `--workload-config <file>` for complex per-workload configurations:
-```yaml
-type: parallel
-components:
-  - workload: get
-    weight: 0.7
-    key_prefix: "user:"
-    keyspace: 50000
-  - workload: vec-query
-    weight: 0.3
-    dataset: "/path/to/vectors.bin"
-    search_config:
-      index_name: "my_idx"
-      k: 10
-```
+**Note:** This will be superseded by the YAML Workload Definition feature above.
 
 **Key Files:** `workload_config.rs`, `cli.rs`, `parallel.rs`, `composite.rs`, `orchestrator.rs`
 **Benefits:** Full per-workload customization, reusable config files.

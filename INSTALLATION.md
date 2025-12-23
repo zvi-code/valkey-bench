@@ -70,11 +70,14 @@ cargo test
 ### Step 7: Setup Python Environment (for Dataset Preparation)
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install vectordb-bench==1.0.10 h5py pandas pyarrow numpy
+# Run the prereq script to set up VectorDBBench and dependencies
+./prep_datasets/prereq-vectordbbench.sh
 ```
+
+This script:
+- Creates a Python virtual environment (`venv/`)
+- Installs VectorDBBench with MemoryDB support
+- Installs dataset conversion dependencies (h5py, pandas, pyarrow, numpy)
 
 ### Step 8: Download a Dataset
 
@@ -271,9 +274,12 @@ cargo clean && cargo build --release
 
 **ModuleNotFoundError: No module named 'vectordb_bench'**
 ```bash
-# Ensure venv is activated
+# Run the prereq script to set up the environment
+./prep_datasets/prereq-vectordbbench.sh
+
+# Or manually:
 source venv/bin/activate
-pip install vectordb-bench==1.0.10
+pip install vectordb-bench[memorydb]
 ```
 
 **ImportError: libhdf5.so not found**

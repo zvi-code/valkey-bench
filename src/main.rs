@@ -26,7 +26,7 @@ mod utils;
 mod workload;
 
 use benchmark::Orchestrator;
-use config::{BenchmarkConfig, CliArgs};
+use config::{BenchmarkConfig, CliArgs, DistanceMetric};
 use dataset::DatasetContext;
 use optimizer::{Constraint, Objectives, Optimizer, TunableParameter};
 
@@ -71,8 +71,12 @@ fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseL
     if config.auth.is_some() {
         conn_parts.push("AUTH".to_string());
     }
+    // Cluster mode: show "cluster(required)" if --cluster flag used, otherwise "cluster(auto)"
+    // Actual detection happens during orchestrator initialization
     if config.cluster_mode {
-        conn_parts.push(format!("cluster(rfr={:?})", config.read_from_replica));
+        conn_parts.push(format!("cluster(required, rfr={:?})", config.read_from_replica));
+    } else {
+        conn_parts.push("cluster(auto-detect)".to_string());
     }
     println!("Connection: {}", conn_parts.join(" | "));
 
@@ -132,6 +136,47 @@ fn print_banner(config: &BenchmarkConfig, base_latency: Option<&benchmark::BaseL
     }
 
     println!("============================================================\n");
+}
+
+/// Handle index management for vector workloads
+/// - Drop index if --dropindex is specified
+/// - Create index if it doesn't exist
+/// - Wait for index to be ready
+fn setup_vector_index(
+    orchestrator: &Orchestrator,
+    config: &BenchmarkConfig,
+    has_vec_workload: bool,
+) -> Result<()> {
+    if !has_vec_workload || config.search_config.is_none() {
+        return Ok(());
+    }
+
+    // Drop existing index if --dropindex is specified
+    if config.dropindex {
+        if orchestrator.search_index_exists() {
+            info!("Dropping existing index (--dropindex specified)...");
+            orchestrator.drop_search_index()?;
+        } else {
+            info!("Index does not exist, skipping drop");
+        }
+    }
+
+    // Ensure index exists (create if not present)
+    if !orchestrator.search_index_exists() {
+        info!("Creating vector search index...");
+        orchestrator.create_search_index(false)?;
+
+        // Wait for index creation to propagate across cluster
+        info!("Waiting 10 seconds for index to propagate...");
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    } else {
+        info!("Index already exists, skipping creation");
+    }
+
+    info!("Waiting for index to be ready...");
+    orchestrator.wait_for_search_indexing(300)?; // 5 minute timeout
+
+    Ok(())
 }
 
 /// Run optimization mode: iteratively test configurations to find optimal parameters
@@ -227,16 +272,10 @@ fn run_optimization(
         orchestrator.set_dataset_arc(ds.clone());
     }
 
-    // Create index if needed (once before optimization loop)
+    // Handle index management for vector workloads (once before optimization loop)
     let has_vec_workload = base_config.tests.iter().any(|t| t.to_lowercase().starts_with("vec"));
-    if has_vec_workload && !base_config.skip_index_create {
-        if base_config.search_config.is_some() {
-            info!("Creating vector search index...");
-            orchestrator.create_search_index(true)?;
-            info!("Waiting for index to be ready...");
-            orchestrator.wait_for_search_indexing(300)?;
-        }
-    }
+    setup_vector_index(&orchestrator, base_config, has_vec_workload)?;
+
     if has_vec_workload && base_config.search_config.is_some() {
         info!("Building cluster tag map...");
         orchestrator.build_cluster_tag_map()?;
@@ -489,9 +528,18 @@ fn run() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("Failed to load dataset: {}", e))?;
             info!("{}", dataset.summary());
 
-            // Update search config with dataset dimension
+            // Update search config with dataset dimension and distance metric
             if let Some(ref mut search_config) = config.search_config {
                 search_config.set_dim(dataset.dim() as u32);
+
+                // Apply distance metric from schema if present
+                let vector_field = search_config.vector_field.clone();
+                if let Some(metric_str) = dataset.schema().get_distance_metric(&vector_field) {
+                    if let Some(metric) = DistanceMetric::from_str(metric_str) {
+                        info!("Using distance metric from schema: {}", metric.as_str());
+                        search_config.set_distance_metric(metric);
+                    }
+                }
             }
 
             Some(dataset)
@@ -530,22 +578,14 @@ fn run() -> Result<()> {
         orchestrator.set_dataset(dataset);
     }
 
-    // Create index if needed for vector search workloads
-    // This matches C behavior: create index whenever --search is enabled with vec-* workloads
+    // Detect workload types
     let has_vec_workload = config.tests.iter().any(|t| {
         let lower = t.to_lowercase();
         lower.starts_with("vec")  // Match vecload, vecquery, vecdelete, vec-load, vec-query, etc.
     });
 
-    if has_vec_workload && !config.skip_index_create {
-        if let Some(ref _search_config) = config.search_config {
-            info!("Creating vector search index...");
-            orchestrator.create_search_index(true)?; // overwrite existing
-
-            info!("Waiting for index to be ready...");
-            orchestrator.wait_for_search_indexing(300)?; // 5 minute timeout
-        }
-    }
+    // Handle index management for vector workloads
+    setup_vector_index(&orchestrator, &config, has_vec_workload)?;
 
     // Build cluster tag map for all vector workloads
     // This scans the cluster to discover which vectors exist and their cluster tags

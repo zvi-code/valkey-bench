@@ -74,6 +74,83 @@ Run GET/SET benchmarks with pre-recorded datasets:
   -t get -n 3000000 -r 3000000 -c 500 --threads 52
 ```
 
+### Complete Workflow: Cohere-10M Dataset
+
+Step-by-step guide for benchmarking with the Cohere 10M dataset (10 million vectors, 768 dimensions, COSINE distance).
+
+#### Step 1: Download the Dataset
+
+```bash
+# Download and convert (takes ~30 minutes, downloads ~46GB)
+./prep_datasets/dataset.sh get cohere-large-10m
+```
+
+This creates:
+- `datasets/cohere-large-10m.yaml` - Schema file
+- `datasets/cohere-large-10m.bin` - Binary data (vectors, queries, ground truth)
+
+#### Step 2: Load Vectors into Valkey (vec-load)
+
+```bash
+./target/release/valkey-bench-rs \
+  -h YOUR_CLUSTER_HOST --cluster \
+  --schema datasets/cohere-large-10m.yaml \
+  --data datasets/cohere-large-10m.bin \
+  -t vec-load \
+  --search-index cohere_10m \
+  -c 100 --threads 16
+```
+
+The tool reads from the schema:
+- Vector count (10,000,000)
+- Key pattern (`vec:{HASHTAG}:%012d`)
+- Distance metric (COSINE)
+- Vector dimensions (768)
+
+#### Step 3: Run Query Benchmark (vec-query)
+
+```bash
+./target/release/valkey-bench-rs \
+  -h YOUR_CLUSTER_HOST --cluster \
+  --schema datasets/cohere-large-10m.yaml \
+  --data datasets/cohere-large-10m.bin \
+  -t vec-query \
+  --search-index cohere_10m \
+  --ef-search 100 -k 10 \
+  -c 50 --threads 16
+```
+
+The tool reads from the schema:
+- Query vectors (1,000 queries)
+- Ground truth neighbors (for recall computation)
+
+#### Expected Output
+
+```
+Running test: vec-query... (1,234/s)
+
+=== vec-query ===
+Throughput: 1,234 req/s | Requests: 1,000 | Duration: 0.81s
+Latency (ms): avg=40.5 p50=38.2 p95=62.1 p99=78.3 max=95.2
+Recall@10: 92.3%
+```
+
+#### Tuning for Higher Recall
+
+Increase `--ef-search` to improve recall at the cost of latency:
+
+```bash
+# Higher recall (~95%+)
+./target/release/valkey-bench-rs \
+  -h YOUR_CLUSTER_HOST --cluster \
+  --schema datasets/cohere-large-10m.yaml \
+  --data datasets/cohere-large-10m.bin \
+  -t vec-query \
+  --search-index cohere_10m \
+  --ef-search 400 -k 10 \
+  -c 50 --threads 16
+```
+
 ## Understanding Command Options
 
 ### Connection Options

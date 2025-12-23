@@ -96,7 +96,7 @@ pub struct BenchmarkConfig {
     pub verbose: bool,
 
     // Control
-    pub skip_index_create: bool,
+    pub dropindex: bool,
     pub skip_load: bool,
     pub cleanup: bool,
 }
@@ -217,7 +217,7 @@ impl BenchmarkConfig {
             quiet: args.quiet,
             verbose: args.verbose,
 
-            skip_index_create: args.skip_index_create,
+            dropindex: args.dropindex,
             skip_load: args.skip_load,
             cleanup: args.cleanup,
         })

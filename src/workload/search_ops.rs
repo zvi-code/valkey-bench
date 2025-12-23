@@ -13,15 +13,20 @@ use crate::utils::{RespEncoder, RespValue};
 /// # Arguments
 /// * `conn` - Connection to execute command on
 /// * `config` - Search configuration with index parameters
-/// * `overwrite` - If true, drop existing index first
+/// * `overwrite` - If true, drop existing index first; if false, skip if exists
 pub fn create_index(
     conn: &mut RawConnection,
     config: &SearchConfig,
     overwrite: bool,
 ) -> Result<(), String> {
-    // Drop existing index if requested
     if overwrite {
+        // Drop existing index first
         let _ = drop_index(conn, &config.index_name);
+    } else {
+        // Check if index already exists - if so, skip creation
+        if index_exists(conn, &config.index_name) {
+            return Ok(());
+        }
     }
 
     // Build FT.CREATE command
@@ -124,6 +129,18 @@ pub fn drop_index(conn: &mut RawConnection, index_name: &str) -> Result<(), Stri
         }
         Ok(_) => Ok(()),
         Err(e) => Err(format!("IO error: {}", e)),
+    }
+}
+
+/// Check if an index exists using FT.INFO
+pub fn index_exists(conn: &mut RawConnection, index_name: &str) -> bool {
+    let mut encoder = RespEncoder::with_capacity(64);
+    encoder.encode_command_str(&["FT.INFO", index_name]);
+
+    match conn.execute_encoded(&encoder) {
+        Ok(RespValue::Error(_)) => false, // Index doesn't exist
+        Ok(_) => true,                    // Got a valid response, index exists
+        Err(_) => false,                  // IO error, assume doesn't exist
     }
 }
 

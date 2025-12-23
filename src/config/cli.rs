@@ -135,7 +135,7 @@ pub struct CliArgs {
     pub address_type: Option<String>,
 
     // ===== Cluster Options =====
-    /// Enable cluster mode
+    /// Require cluster mode (auto-detected by default, this flag enforces it)
     #[arg(long = "cluster")]
     pub cluster_mode: bool,
 
@@ -381,9 +381,9 @@ pub struct CliArgs {
     pub request_timeout_ms: u64,
 
     // ===== Advanced Options =====
-    /// Skip index creation (assume exists)
-    #[arg(long = "skip-index-create")]
-    pub skip_index_create: bool,
+    /// Drop existing index before creating new one
+    #[arg(long = "dropindex")]
+    pub dropindex: bool,
 
     /// Skip data loading (assume loaded)
     #[arg(long = "skip-load")]
@@ -449,6 +449,16 @@ impl DistanceMetric {
             DistanceMetric::L2 => "L2",
             DistanceMetric::InnerProduct => "IP",
             DistanceMetric::Cosine => "COSINE",
+        }
+    }
+
+    /// Parse from string (case-insensitive)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "l2" => Some(DistanceMetric::L2),
+            "ip" | "innerproduct" | "inner_product" => Some(DistanceMetric::InnerProduct),
+            "cosine" => Some(DistanceMetric::Cosine),
+            _ => None,
         }
     }
 }
