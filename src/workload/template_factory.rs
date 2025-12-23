@@ -305,7 +305,10 @@ fn create_vec_query_template(search_config: &SearchConfig) -> CommandTemplate {
         .arg_str("BLOB")
         .arg_query_vector(search_config.vec_byte_len()) // Use query vector for FT.SEARCH
         .arg_str("DIALECT")
-        .arg_str("2"); // DIALECT 2 required for KNN queries
+        .arg_str("2") // DIALECT 2 required for KNN queries
+        .arg_str("LIMIT")
+        .arg_str("0") // offset
+        .arg_str(&search_config.k.to_string()); // count - must match KNN k to get all results
 
     if search_config.nocontent {
         template = template.arg_str("NOCONTENT");
