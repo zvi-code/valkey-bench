@@ -215,8 +215,8 @@ pub struct CliArgs {
     #[arg(long = "ef-search")]
     pub ef_search: Option<u32>,
 
-    /// Use NOCONTENT in FT.SEARCH (return IDs only)
-    #[arg(long = "nocontent")]
+    /// Use NOCONTENT in FT.SEARCH (return IDs only, faster)
+    #[arg(long = "nocontent", default_value_t = true)]
     pub nocontent: bool,
 
     // ===== Tag and Attribute Options =====
